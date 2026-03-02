@@ -1,0 +1,34 @@
+"""Configuración centralizada del sistema financiero."""
+
+from __future__ import annotations
+
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── Base de datos ──────────────────────────────────────────────────────────────
+DB_PATH: str = os.getenv("DB_PATH", "finance.db")
+SCHEMA_PATH: str = os.getenv("SCHEMA_PATH", "sql/schema.sql")
+
+# ── Google API / Gmail ─────────────────────────────────────────────────────────
+GOOGLE_CREDENTIALS_PATH: str = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
+GMAIL_QUERY: str = "from:(*@bci.cl OR *@bancoestado.cl OR *@security.cl)"
+PROCESSED_LABEL: str = "Procesado/Finanzas"
+# Máximo de correos a leer por ejecución (evita OOM con inbox grande)
+GMAIL_MAX_RESULTS: int = int(os.getenv("GMAIL_MAX_RESULTS", "500"))
+
+# ── Reconciliación ─────────────────────────────────────────────────────────────
+# Días de tolerancia para cruzar fecha Gmail vs cartola (cargos pueden debitarse al día siguiente)
+RECONCILIATION_DATE_TOLERANCE_DAYS: int = int(
+    os.getenv("RECONCILIATION_DATE_TOLERANCE_DAYS", "1")
+)
+
+# ── Localización ──────────────────────────────────────────────────────────────
+TIMEZONE: str = "America/Santiago"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+LOG_FILE: str = os.getenv("LOG_FILE", "economicscript.log")

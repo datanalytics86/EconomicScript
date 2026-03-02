@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS category_rules (
     pattern TEXT NOT NULL,
     category_id INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (category_id) REFERENCES categories(id)
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+    UNIQUE(pattern, category_id) -- previene reglas duplicadas
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     raw_text TEXT,
     gmail_message_id TEXT UNIQUE,
     statement_ref TEXT,
+    content_hash TEXT UNIQUE, -- hash para deduplicación de cartolas
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (category_id) REFERENCES categories(id)
 );
@@ -37,6 +39,15 @@ CREATE INDEX IF NOT EXISTS idx_transactions_bank_date_amount
 
 CREATE INDEX IF NOT EXISTS idx_transactions_source
     ON transactions(source);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_category_id
+    ON transactions(category_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_verified
+    ON transactions(verified);
+
+CREATE INDEX IF NOT EXISTS idx_category_rules_pattern
+    ON category_rules(pattern);
 
 CREATE TABLE IF NOT EXISTS reconciliation_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

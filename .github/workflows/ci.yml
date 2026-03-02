@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Inicializar base de datos de prueba
+        run: python -c "from db import Database; Database('test.db').init_schema()"
+        env:
+          DB_PATH: test.db
+
+      - name: Ejecutar tests
+        run: pytest tests/ -v --tb=short
+        env:
+          DB_PATH: test.db
