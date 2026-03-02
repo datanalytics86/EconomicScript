@@ -29,6 +29,10 @@ RECONCILIATION_DATE_TOLERANCE_DAYS: int = int(
 # ── Localización ──────────────────────────────────────────────────────────────
 TIMEZONE: str = "America/Santiago"
 
+# ── Cartolas PDF ──────────────────────────────────────────────────────────────
+# Contraseña para abrir cartolas PDF protegidas (los bancos chilenos suelen usar el RUT)
+PDF_PASSWORD: str = os.getenv("PDF_PASSWORD", "")
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE: str = os.getenv("LOG_FILE", "economicscript.log")

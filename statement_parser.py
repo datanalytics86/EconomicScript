@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pdfplumber
 
+import config
 from models import TransactionRecord
 from utils import compute_content_hash, normalize_clp_amount, parse_chilean_date
 
@@ -26,9 +27,13 @@ _BANK_PATTERNS: dict[str, tuple[str, ...]] = {
 class StatementParser:
     """Procesa cartolas en PDF o CSV y extrae transacciones normalizadas."""
 
-    def parse_file(self, file_path: str) -> list[TransactionRecord]:
-        """Despacha parsing según extensión del archivo."""
+    def parse_file(self, file_path: str, password: str | None = None) -> list[TransactionRecord]:
+        """Despacha parsing según extensión del archivo.
 
+        Args:
+            file_path: Ruta al archivo PDF o CSV.
+            password: Contraseña para PDFs protegidos. Si es None usa PDF_PASSWORD del .env.
+        """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
@@ -38,7 +43,7 @@ class StatementParser:
         if path.suffix.lower() == ".csv":
             return self._parse_csv(path)
         if path.suffix.lower() == ".pdf":
-            return self._parse_pdf(path)
+            return self._parse_pdf(path, password=password)
         raise ValueError(f"Formato no soportado: {path.suffix!r}. Use PDF o CSV")
 
     def _parse_csv(self, path: Path) -> list[TransactionRecord]:
@@ -84,9 +89,11 @@ class StatementParser:
         )
         return transactions
 
-    def _parse_pdf(self, path: Path) -> list[TransactionRecord]:
+    def _parse_pdf(self, path: Path, password: str | None = None) -> list[TransactionRecord]:
+        effective_password = password or config.PDF_PASSWORD or None
+        open_kwargs: dict = {"password": effective_password} if effective_password else {}
         text_chunks: list[str] = []
-        with pdfplumber.open(path) as pdf:
+        with pdfplumber.open(path, **open_kwargs) as pdf:
             for page in pdf.pages:
                 text_chunks.append(page.extract_text() or "")
         all_text = "\n".join(text_chunks)
