@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import html as _html_stdlib
 import logging
+import re
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -143,18 +145,57 @@ class GmailIngestor:
 
     @staticmethod
     def _extract_body(payload: dict) -> str:
-        """Extrae texto plano del payload Gmail."""
+        """Extrae texto del payload Gmail.
 
-        parts = payload.get("payload", {}).get("parts", [])
-        data = payload.get("payload", {}).get("body", {}).get("data")
-        if not data and parts:
-            for part in parts:
-                if part.get("mimeType") == "text/plain":
-                    data = part.get("body", {}).get("data")
-                    break
-        if not data:
-            return ""
-        return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+        Busca recursivamente en partes anidadas (multipart/mixed, multipart/alternative).
+        Prefiere text/plain; si no existe, convierte text/html a texto plano.
+        """
+        plain: list[str] = []
+        html_parts: list[str] = []
+
+        def _collect(part: dict) -> None:
+            mime = part.get("mimeType", "")
+            data = part.get("body", {}).get("data")
+            if data:
+                text = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+                if mime == "text/plain":
+                    plain.append(text)
+                elif mime == "text/html":
+                    html_parts.append(text)
+            for sub in part.get("parts", []):
+                _collect(sub)
+
+        _collect(payload.get("payload", {}))
+
+        if plain:
+            return plain[0]
+        if html_parts:
+            return GmailIngestor._html_to_text(html_parts[0])
+        return ""
+
+    @staticmethod
+    def _html_to_text(html_body: str) -> str:
+        """Convierte HTML a texto plano preservando estructura de líneas.
+
+        Reemplaza etiquetas de bloque y celdas de tabla con saltos/espacios
+        antes de eliminar el resto del markup.
+        """
+        # Etiquetas de cierre de bloque → salto de línea
+        text = re.sub(
+            r"<(?:br\s*/?|/p|/div|/tr|/li|/h[1-6])[^>]*>",
+            "\n",
+            html_body,
+            flags=re.IGNORECASE,
+        )
+        # Apertura de celda → espacio (separa label de valor en tablas)
+        text = re.sub(r"<t[dh][^>]*>", " ", text, flags=re.IGNORECASE)
+        # Elimina etiquetas restantes
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decodifica entidades (&amp; &nbsp; &gt; etc.)
+        text = _html_stdlib.unescape(text)
+        # Normaliza espacios dentro de cada línea, descarta líneas vacías
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        return "\n".join(line for line in lines if line)
 
     def _ensure_processed_label(self, label_name: str) -> str:
         """Obtiene o crea label para correos procesados (idempotente)."""

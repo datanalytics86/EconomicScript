@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 
 import pandas as pd
@@ -11,6 +13,8 @@ import streamlit as st
 
 import config
 from categorizer import assign_category_and_learn, auto_categorize
+from db import Database
+from statement_parser import StatementParser
 
 
 @contextmanager
@@ -216,6 +220,44 @@ def _render_rules(conn: sqlite3.Connection) -> None:
             st.rerun()
 
 
+def _render_cartola_upload() -> None:
+    """Permite cargar una cartola PDF o CSV y persistirla en la base de datos."""
+    with st.expander("Cargar cartola", expanded=False):
+        uploaded = st.file_uploader(
+            "Selecciona una cartola (PDF o CSV)",
+            type=["pdf", "csv"],
+            key="cartola_uploader",
+        )
+        password = st.text_input(
+            "Contraseña del PDF",
+            type="password",
+            placeholder="Ej: 12345678-9  — dejar vacío si no tiene contraseña",
+            key="cartola_password",
+        )
+
+        if uploaded and st.button("Procesar cartola"):
+            suffix = ".pdf" if uploaded.name.lower().endswith(".pdf") else ".csv"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(uploaded.read())
+                tmp_path = tmp.name
+            try:
+                transactions = StatementParser().parse_file(
+                    tmp_path, password=password or None
+                )
+                saved = Database(config.DB_PATH).insert_transactions(transactions)
+                st.success(
+                    f"{saved} transacciones guardadas "
+                    f"({len(transactions)} extraídas de «{uploaded.name}»)."
+                )
+                if saved < len(transactions):
+                    st.info(f"{len(transactions) - saved} ya existían y fueron ignoradas.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Error al procesar la cartola: {exc}")
+            finally:
+                os.unlink(tmp_path)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Finanzas Personales CL",
@@ -226,6 +268,8 @@ def main() -> None:
 
     with get_db() as conn:
         _render_sidebar(conn)
+        _render_cartola_upload()
+        st.divider()
         df = _load_transactions(conn)
 
         if df.empty:
