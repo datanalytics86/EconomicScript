@@ -266,6 +266,8 @@ def main() -> None:
     )
     st.title("Consolidado financiero personal")
 
+    Database(config.DB_PATH).init_schema(config.SCHEMA_PATH)
+
     with get_db() as conn:
         _render_sidebar(conn)
         _render_cartola_upload()
