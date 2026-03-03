@@ -8,16 +8,26 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 SANTIAGO_TZ = ZoneInfo("America/Santiago")
-DATE_FORMATS = ("%d/%m/%Y %H:%M", "%d-%m-%Y %H:%M", "%d/%m/%Y", "%d-%m-%Y")
+DATE_FORMATS = (
+    "%d/%m/%Y %H:%M",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y",
+    "%d-%m-%Y",
+    # Formato corto usado en EECC bancarios (ej: 30/01/26 → 30/01/2026)
+    "%d/%m/%y",
+    "%d-%m-%y",
+)
 
 
 def normalize_clp_amount(raw_amount: str) -> int:
-    """Convierte montos CLP a entero. Preserva signo negativo para abonos."""
+    """Convierte montos CLP a entero. Preserva signo negativo para abonos.
 
+    Maneja: "-1.234", "$ -1.234", "-$1.234", "$-1.234", "$1.234".
+    """
     stripped = raw_amount.strip()
-    negative = stripped.startswith("-")
-    # Extrae solo dígitos (elimina puntos separadores de miles, $, espacios)
-    digits_only = re.sub(r"[^0-9]", "", stripped.replace(".", "").replace(",", ""))
+    # Detecta negativo en cualquier posición (ej EECC: "$ -4.446.270")
+    negative = "-" in stripped
+    digits_only = re.sub(r"[^0-9]", "", stripped)
     if not digits_only:
         raise ValueError(f"Monto inválido: {raw_amount!r}")
     value = int(digits_only)
@@ -27,7 +37,7 @@ def normalize_clp_amount(raw_amount: str) -> int:
 
 
 def parse_chilean_date(raw_date: str) -> datetime:
-    """Parsea fechas DD/MM/YYYY o DD-MM-YYYY, opcionalmente con hora HH:MM."""
+    """Parsea fechas DD/MM/YYYY, DD-MM-YYYY, o DD/MM/YY (año corto), con hora opcional."""
 
     stripped = raw_date.strip()
     for fmt in DATE_FORMATS:

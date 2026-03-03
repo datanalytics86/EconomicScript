@@ -1,148 +1,367 @@
-"""Tests unitarios de parsers de correos bancarios."""
+"""Tests unitarios de parsers bancarios y statement_parser."""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from parsers.banco_estado import BancoEstadoParser
 from parsers.bci import BCIParser
 from parsers.security import SecurityParser
+from statement_parser import StatementParser
+from utils import normalize_clp_amount, parse_chilean_date
 
+# ─────────────────────────────────────────────
+# utils
+# ─────────────────────────────────────────────
 
-def test_bci_parser_tc_purchase() -> None:
-    """Notificación real de compra con tarjeta de crédito BCI."""
+def test_normalize_amount_standard() -> None:
+    assert normalize_clp_amount("$1.234") == 1234
+
+def test_normalize_amount_dollar_space_negative() -> None:
+    """Formato EECC: '$ -4.446.270'"""
+    assert normalize_clp_amount("$ -4.446.270") == -4446270
+
+def test_normalize_amount_negative_prefix() -> None:
+    assert normalize_clp_amount("-$100.000") == -100000
+
+def test_parse_date_short_year() -> None:
+    """Año corto DD/MM/YY usado en EECC."""
+    dt = parse_chilean_date("30/01/26")
+    assert dt.year == 2026
+    assert dt.month == 1
+    assert dt.day == 30
+
+def test_parse_date_with_seconds() -> None:
+    """Fecha con hora y segundos de transferencias BancoEstado."""
+    dt = parse_chilean_date("27/02/2026 12:06")
+    assert dt.year == 2026
+
+# ─────────────────────────────────────────────
+# BCI
+# ─────────────────────────────────────────────
+
+def test_bci_tc_real_format() -> None:
+    """Compra TC real: campo y valor en la misma línea separados por espacio."""
     parser = BCIParser()
-    body = """Hola
-NICOLAS IGNACIO SEBASTIAN ANDRADE SOCIAS
-Realizaste una compra
-con tu tarjeta de crédito.
-
-Número tarjeta crédito ****9406
-Monto $202.502
-Fecha 02/03/2026
-Hora 11:13 horas
-Comercio NEAT GASTO COMUN SAN FELIPE CL
-Cuotas 6
-"""
-    tx = parser.parse(body, "tc1")
+    body = (
+        "Hola\n"
+        "NICOLAS IGNACIO SEBASTIAN ANDRADE SOCIAS\n"
+        "Realizaste una compra\n"
+        "con tu tarjeta de crédito.\n\n"
+        "Número tarjeta crédito ****9406\n"
+        "Monto $73.970\n"
+        "Fecha 02/03/2026\n"
+        "Hora 13:43 horas\n"
+        "Comercio DP *FALABELLA.COM SANTIAGO CL\n"
+        "Cuotas 3\n"
+    )
+    tx = parser.parse(body, "bci_tc_1")
     assert tx.bank == "BCI"
-    assert tx.amount == 202502
+    assert tx.amount == 73970
     assert tx.type == "Compra TC"
-    assert "NEAT" in tx.merchant
+    assert "FALABELLA" in tx.merchant
 
 
-def test_bci_parser_tc_with_colon() -> None:
-    """Compra TC con formato alternativo (etiquetas con dos puntos)."""
+def test_bci_tc_legacy_colon_format() -> None:
+    """Compra TC con formato de etiqueta:valor."""
     parser = BCIParser()
-    body = """Realizaste una compra con tu tarjeta de crédito.
-Monto: $45.890
-Fecha: 15/01/2025
-Hora: 14:32 horas
-Comercio: LIDER EXPRESS 1234
-Cuotas: 1
-"""
-    tx = parser.parse(body, "tc2")
+    body = (
+        "Realizaste una compra con tu tarjeta de crédito.\n"
+        "Monto: $45.890\n"
+        "Fecha: 15/01/2025\n"
+        "Hora: 14:32 horas\n"
+        "Comercio: LIDER EXPRESS 1234\n"
+        "Cuotas: 1\n"
+    )
+    tx = parser.parse(body, "bci_tc_2")
     assert tx.amount == 45890
     assert tx.merchant == "LIDER EXPRESS 1234"
 
 
-def test_bci_parser_transfer() -> None:
-    """Notificación real de transferencia de fondos BCI."""
+def test_bci_transfer_real_format() -> None:
+    """Transferencia BCI real: campos en una línea."""
     parser = BCIParser()
-    body = """Hola
-Nicolas Ignacio Sebastian Andrade Socias
-Realizaste una transferencia de fondos desde
-tu cuenta N° 46685197
-
-Datos de tu transferencia
-Monto transferido $100.000
-Nombre del destinatario Kathia Silva
-Banco de destino Banco de Chile / Edwards / Credichile
-Cuenta de destino 8002066409
-Fecha de abono 01/03/2026
-Número de comprobante 1134563970
-"""
-    tx = parser.parse(body, "tr1")
-    assert tx.bank == "BCI"
-    assert tx.amount == 100000
-    assert tx.type == "Transferencia"
-    assert tx.merchant == "Kathia Silva"
-
-
-def test_bci_can_parse_transfer_subject() -> None:
-    parser = BCIParser()
-    assert parser.can_parse("transferencias@bci.cl", "Aviso de Transferencia de Fondos.", "")
-
-
-def test_bci_can_parse_tc_subject() -> None:
-    parser = BCIParser()
-    assert parser.can_parse(
-        "contacto@bci.cl", "Notificación de uso de tu tarjeta de crédito", ""
+    body = (
+        "Hola\nNicolas Ignacio Sebastian Andrade Socias\n"
+        "Realizaste una transferencia de fondos desde\n"
+        "tu cuenta N° 46685197\n\n"
+        "Datos de tu transferencia\n"
+        "Monto transferido $4.000.000\n"
+        "Nombre del destinatario Nicolas Andrade\n"
+        "Banco de destino Banco Security\n"
+        "Cuenta de destino 927174470\n"
+        "Fecha de abono 02/03/2026\n"
+        "Número de comprobante 1135224638\n"
     )
+    tx = parser.parse(body, "bci_tr_1")
+    assert tx.bank == "BCI"
+    assert tx.amount == 4000000
+    assert tx.type == "Transferencia"
+    assert tx.merchant == "Nicolas Andrade"
 
 
-def test_bci_can_parse_rejects_other_sender() -> None:
-    parser = BCIParser()
-    assert not parser.can_parse("noreply@gmail.com", "Aviso de Transferencia", "")
+def test_bci_can_parse_transfer_sender() -> None:
+    assert BCIParser().can_parse("transferencias@bci.cl", "Aviso de Transferencia de Fondos.", "")
 
 
-def test_banco_estado_parser_case_1() -> None:
+def test_bci_can_parse_tc_sender() -> None:
+    assert BCIParser().can_parse("contacto@bci.cl", "Notificación de uso de tu tarjeta", "")
+
+
+def test_bci_rejects_other_sender() -> None:
+    assert not BCIParser().can_parse("noreply@gmail.com", "Aviso", "")
+
+
+# ─────────────────────────────────────────────
+# BancoEstado
+# ─────────────────────────────────────────────
+
+def test_bancoestado_compra_tc_real() -> None:
+    """Compra TC real BancoEstado: monto y merchant en una sola línea."""
     parser = BancoEstadoParser()
-    body = """Tipo: Compra Débito
-Monto: $23.450
-Comercio: SANTA ISABEL
-Fecha: 15/01/2025 11:12
-"""
-    tx = parser.parse(body, "e1")
+    body = (
+        "NICOLAS IGNACIO SEBASTIAN ANDRADE\n"
+        "Se ha realizado una compra por $ 2.990 en MERPAGO*MELIMAS asociado a su "
+        "tarjeta de crédito terminada en **** 0608 el día 27/02/2026 a las 15:12 hrs.\n"
+    )
+    tx = parser.parse(body, "be_tc_1")
     assert tx.bank == "BANCO_ESTADO"
+    assert tx.amount == 2990
+    assert tx.type == "Compra TC"
+    assert "MERPAGO" in tx.merchant
 
 
-def test_banco_estado_parser_case_2() -> None:
+def test_bancoestado_transfer_saliente_real() -> None:
+    """Transferencia saliente BancoEstado: campo por línea."""
     parser = BancoEstadoParser()
-    body = """Glosa: Transferencia
-Importe: $300.000
-Descripción: PAGO ARRIENDO
-Fecha operación: 14-01-2025
-"""
-    tx = parser.parse(body, "e2")
-    assert tx.amount == 300000
+    body = (
+        "Estimado(a) Nicolas Ignacio Sebastian Andrade:\n"
+        "La transferencia se ha realizado con éxito\n"
+        "Datos de la transferencia que realizaste\n"
+        "Monto\n"
+        "$1.200.000\n"
+        "Para\n"
+        "Nicolas Andrade\n"
+        "RUT\n"
+        "16.474.276-8\n"
+        "Cuenta\n"
+        "Cuenta Corriente 46685197\n"
+        "Banco\n"
+        "BANCO DE CREDITO E INVERSIONES\n"
+        "Email\n"
+        "andrade.nico@gmail.com\n"
+        "Desde\n"
+        "Cuenta Corriente 28200260921\n"
+        "Mensaje\n"
+        "Fecha y hora\n"
+        "27/02/2026 12:06:28\n"
+        "N° transacción\n"
+        "7084964\n"
+    )
+    tx = parser.parse(body, "be_tr_1")
+    assert tx.bank == "BANCO_ESTADO"
+    assert tx.amount == 1200000
+    assert tx.type == "Transferencia"
+    assert tx.merchant == "Nicolas Andrade"
 
 
-def test_banco_estado_parser_case_3() -> None:
+def test_bancoestado_transfer_entrante_real() -> None:
+    """Transferencia entrante BancoEstado: campo 'de nuestro(a) cliente'."""
     parser = BancoEstadoParser()
-    body = """Tipo: Compra Web
-Monto: $19.990
-Comercio: MERCADOLIBRE
-Fecha: 18/01/2025 08:45
-"""
-    tx = parser.parse(body, "e3")
-    assert tx.type == "Compra Web"
+    body = (
+        "Estimado(a) Nicolas Andrade:\n"
+        "Has recibido una Transferencia Electrónica\n"
+        "de nuestro(a) cliente Nicolas Ignacio Sebastian Andrade\n"
+        "Datos de la transferencia que recibiste\n"
+        "Monto\n"
+        "$1.200.000\n"
+        "Para\n"
+        "Nicolas Andrade\n"
+        "RUT\n"
+        "16.474.276-8\n"
+        "Fecha y hora\n"
+        "27/02/2026 12:06:28\n"
+    )
+    tx = parser.parse(body, "be_tr_2")
+    assert tx.amount == 1200000
+    assert "Nicolas" in tx.merchant
 
 
-def test_security_parser_case_1() -> None:
+def test_bancoestado_legacy_format() -> None:
+    """Formato legado etiqueta:valor sigue funcionando."""
+    parser = BancoEstadoParser()
+    body = "Tipo: Compra Débito\nMonto: $23.450\nComercio: SANTA ISABEL\nFecha: 15/01/2025 11:12\n"
+    tx = parser.parse(body, "be_leg_1")
+    assert tx.bank == "BANCO_ESTADO"
+    assert tx.amount == 23450
+
+
+def test_bancoestado_can_parse_real_sender() -> None:
+    """Acepta remitentes reales de BancoEstado."""
+    parser = BancoEstadoParser()
+    assert parser.can_parse("notificaciones@correo.bancoestado.cl", "", "")
+    assert parser.can_parse("noreply@correo.bancoestado.cl", "", "")
+
+
+def test_bancoestado_rejects_other_sender() -> None:
+    assert not BancoEstadoParser().can_parse("spam@gmail.com", "", "")
+
+
+# ─────────────────────────────────────────────
+# Security
+# ─────────────────────────────────────────────
+
+def test_security_compra_tc_real() -> None:
+    """Compra TC real Security: 'El DD/MM/YYYY ... realizaste una compra en MERCHANT de $X'."""
     parser = SecurityParser()
-    body = """Movimiento: Compra
-Monto: $55.000
-Comercio: COPEC
-Fecha: 19/01/2025 10:00
-"""
-    tx = parser.parse(body, "s1")
+    body = (
+        "Estimado(a) NICOLAS IGNACIO S. ANDRADE SOCIAS,\n"
+        "El 03/03/2026 a las 09:41 realizaste una compra en\n"
+        "RedGloba*STOP MARKET PROVIDENCIA CHL de $2.990 con\n"
+        "cargo a la tarjeta ***7233.\n"
+    )
+    tx = parser.parse(body, "sec_tc_1")
     assert tx.bank == "SECURITY"
+    assert tx.amount == 2990
+    assert tx.type == "Compra TC"
+    assert "STOP MARKET" in tx.merchant
 
 
-def test_security_parser_case_2() -> None:
+def test_security_transfer_saliente_real() -> None:
+    """Transferencia saliente Security: Monto: → Fecha y hora: → Nombre:."""
     parser = SecurityParser()
-    body = """Tipo: Cargo
-Total: $14.500
-Detalle: UBER TRIP
-Fecha y hora: 20-01-2025 23:15
-"""
-    tx = parser.parse(body, "s2")
-    assert tx.amount == 14500
+    body = (
+        "Comprobante de transferencia\n"
+        "Estimado(a) NICOLAS IGNACIO S. ANDRADE SOCIAS\n"
+        "Usted realizó la siguiente transferencia de fondos:\n"
+        "Datos de Transferencia\n"
+        "Monto:\n"
+        "$ 2.500.000\n"
+        "Motivo:\n"
+        "pagos\n"
+        "Cuenta de origen:\n"
+        "927174470\n"
+        "Fecha y hora:\n"
+        "02/03/2026 16:00 hrs.\n"
+        "N° de operación:\n"
+        "00883682844\n"
+        "Datos de Destinatario\n"
+        "Nombre:\n"
+        "Nicolas Andrade Socias\n"
+        "Rut:\n"
+        "16.474.276-8\n"
+    )
+    tx = parser.parse(body, "sec_tr_1")
+    assert tx.bank == "SECURITY"
+    assert tx.amount == 2500000
+    assert tx.type == "Transferencia"
+    assert "Nicolas Andrade" in tx.merchant
 
 
-def test_security_parser_case_3() -> None:
+def test_security_transfer_entrante_real() -> None:
+    """Transferencia entrante Security: 'recibiste una TRANSFERENCIA DESDE BANCO DE NOMBRE'."""
     parser = SecurityParser()
-    body = """Movimiento: Suscripción
-Monto: $6.990
-Comercio: SPOTIFY
-Fecha: 21/01/2025
-"""
-    tx = parser.parse(body, "s3")
-    assert tx.merchant == "SPOTIFY"
+    body = (
+        "Estimado(a) NICOLAS IGNACIO S. ANDRADE SOCIAS,\n"
+        "El 02/03/2026 a las 18:46 recibiste una TRANSFERENCIA DESDE\n"
+        "BCI DE Nicolas Ignacio Sebastian Andrade Socias en la cuenta\n"
+        "***4470 de $1.000.000.\n"
+    )
+    tx = parser.parse(body, "sec_tr_2")
+    assert tx.bank == "SECURITY"
+    assert tx.amount == 1000000
+    assert tx.type == "Transferencia Recibida"
+    assert "Nicolas" in tx.merchant
+
+
+def test_security_legacy_format() -> None:
+    """Formato legado etiqueta:valor sigue funcionando."""
+    parser = SecurityParser()
+    body = "Movimiento: Compra\nMonto: $55.000\nComercio: COPEC\nFecha: 19/01/2025 10:00\n"
+    tx = parser.parse(body, "sec_leg_1")
+    assert tx.bank == "SECURITY"
+    assert tx.amount == 55000
+
+
+def test_security_can_parse_purchase_sender() -> None:
+    assert SecurityParser().can_parse("notificaciones@security.cl", "", "")
+
+
+def test_security_can_parse_transfer_sender() -> None:
+    assert SecurityParser().can_parse("noresponder@bancosecurity.cl", "", "")
+
+
+def test_security_rejects_other_sender() -> None:
+    assert not SecurityParser().can_parse("noreply@gmail.com", "", "")
+
+
+# ─────────────────────────────────────────────
+# StatementParser — PDFs reales del dropzone
+# ─────────────────────────────────────────────
+
+DROPZONE = Path(__file__).resolve().parents[1] / "samples" / "dropzone"
+
+
+def _pdf(name: str) -> Path:
+    return DROPZONE / name
+
+
+@pytest.mark.skipif(
+    not _pdf("Cartola_BancoEstado_SinPassword.pdf").exists(),
+    reason="Archivo de muestra no encontrado",
+)
+def test_statement_cartola_bancoestado() -> None:
+    """Cartola BancoEstado extrae todas las filas de la tabla correctamente."""
+    txs = StatementParser().parse_file(str(_pdf("Cartola_BancoEstado_SinPassword.pdf")))
+    assert len(txs) >= 7, f"Se esperaban >= 7 transacciones, se obtuvieron {len(txs)}"
+    banks = {tx.bank for tx in txs}
+    assert banks == {"BANCO_ESTADO"}
+    # Verifica cargos y abonos
+    tipos = {tx.type for tx in txs}
+    assert "Cargo" in tipos
+    assert "Abono" in tipos
+
+
+@pytest.mark.skipif(
+    not _pdf("EECC_VISA_BancoEstado_SinPassword.pdf").exists(),
+    reason="Archivo de muestra no encontrado",
+)
+def test_statement_eecc_bancoestado() -> None:
+    """EECC BancoEstado extrae transacciones del período actual."""
+    txs = StatementParser().parse_file(str(_pdf("EECC_VISA_BancoEstado_SinPassword.pdf")))
+    assert len(txs) >= 3, f"Se esperaban >= 3 transacciones, se obtuvieron {len(txs)}"
+    banks = {tx.bank for tx in txs}
+    assert banks == {"BANCO_ESTADO"}
+    merchants = [tx.merchant for tx in txs]
+    assert any("NETFLIX" in m.upper() or "MERPAGO" in m.upper() or "FUNDACION" in m.upper()
+               for m in merchants)
+
+
+@pytest.mark.skipif(
+    not _pdf("EECC_VISA_Security_SinPassword.pdf").exists(),
+    reason="Archivo de muestra no encontrado",
+)
+def test_statement_eecc_security() -> None:
+    """EECC Security extrae transacciones del período actual."""
+    txs = StatementParser().parse_file(str(_pdf("EECC_VISA_Security_SinPassword.pdf")))
+    assert len(txs) >= 5, f"Se esperaban >= 5 transacciones, se obtuvieron {len(txs)}"
+    banks = {tx.bank for tx in txs}
+    assert banks == {"SECURITY"}
+
+
+@pytest.mark.skipif(
+    not _pdf("EECC_VISA_BCI_SinPassword.pdf").exists(),
+    reason="Archivo de muestra no encontrado",
+)
+def test_statement_eecc_bci() -> None:
+    """EECC BCI extrae transacciones del período actual (incluye cargos en cuotas e impuestos)."""
+    txs = StatementParser().parse_file(str(_pdf("EECC_VISA_BCI_SinPassword.pdf")))
+    assert len(txs) >= 10, f"Se esperaban >= 10 transacciones, se obtuvieron {len(txs)}"
+    banks = {tx.bank for tx in txs}
+    assert banks == {"BCI"}
+    # Hay abonos (pagos) y cargos
+    tipos = {tx.type for tx in txs}
+    assert "Cargo TC" in tipos or "Abono TC" in tipos
