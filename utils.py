@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 SANTIAGO_TZ = ZoneInfo("America/Santiago")
@@ -49,6 +49,34 @@ def parse_chilean_date(raw_date: str) -> datetime:
     raise ValueError(
         f"Fecha inválida (formatos esperados DD/MM/YYYY o DD-MM-YYYY): {raw_date!r}"
     )
+
+
+def get_cycle_start_date(today: date | None = None) -> date:
+    """Retorna el 2do-último día hábil del mes anterior como inicio del ciclo de gasto.
+
+    Los días hábiles excluyen fines de semana y feriados legales chilenos.
+    El ciclo se resetea en ese día, alineándose con el corte de tarjetas de crédito.
+    """
+    import holidays as holidays_lib  # importación diferida para no requerir en tests básicos
+
+    if today is None:
+        today = date.today()
+
+    first_of_current = today.replace(day=1)
+    last_of_prev = first_of_current - timedelta(days=1)
+    cl_holidays = holidays_lib.CL(years=last_of_prev.year)
+
+    business_days = 0
+    current = last_of_prev
+    while current.month == last_of_prev.month:
+        if current.weekday() < 5 and current not in cl_holidays:
+            business_days += 1
+            if business_days == 2:
+                return current
+        current -= timedelta(days=1)
+
+    # Fallback improbable: si el mes anterior tuviera < 2 días hábiles
+    return last_of_prev.replace(day=1)
 
 
 def compute_content_hash(bank: str, date: str, amount: int, merchant: str) -> str:

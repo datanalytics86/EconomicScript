@@ -7,6 +7,7 @@ import html as _html_stdlib
 import imaplib
 import logging
 import re
+from datetime import date
 
 import config
 from db import Database
@@ -35,13 +36,19 @@ class GmailIngestor:
         LOGGER.info("Conexión IMAP establecida con %s", config.IMAP_SERVER)
         return mail
 
-    def ingest(self) -> dict[str, int]:
-        """Procesa correos Gmail vía IMAP. Retorna resumen con conteos por estado."""
+    def ingest(self, since_date: date | None = None) -> dict[str, int]:
+        """Procesa correos Gmail vía IMAP. Retorna resumen con conteos por estado.
+
+        Args:
+            since_date: Si se indica, busca TODOS los correos (leídos y no leídos)
+                        desde esa fecha en adelante. Útil para carga inicial histórica.
+                        Si es None, busca solo correos no leídos (comportamiento diario).
+        """
 
         mail = self._connect()
         try:
             mail.select("INBOX")
-            uids = self._search_bank_emails(mail)
+            uids = self._search_bank_emails(mail, since_date=since_date)
             LOGGER.info("Correos encontrados para procesar: %s", len(uids))
 
             self._ensure_processed_folder(mail)
@@ -104,12 +111,25 @@ class GmailIngestor:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _search_bank_emails(self, mail: imaplib.IMAP4_SSL) -> list[bytes]:
-        """Busca correos no leídos de los dominios bancarios configurados."""
+    def _search_bank_emails(
+        self, mail: imaplib.IMAP4_SSL, since_date: date | None = None
+    ) -> list[bytes]:
+        """Busca correos de los dominios bancarios configurados.
+
+        Si since_date está presente usa ALL SINCE <fecha> (incluye ya leídos).
+        Si es None usa UNSEEN (solo correos nuevos — modo diario normal).
+        """
+        if since_date is not None:
+            # Formato IMAP: DD-Mon-YYYY, ej: "24-Feb-2026"
+            imap_date = since_date.strftime("%d-%b-%Y")
+            criteria_prefix = f'(ALL SINCE "{imap_date}"'
+        else:
+            criteria_prefix = "(UNSEEN"
 
         all_uids: set[bytes] = set()
         for domain in BANK_DOMAINS:
-            _, data = mail.uid("search", None, f'(UNSEEN FROM "{domain}")')
+            criteria = f'{criteria_prefix} FROM "{domain}")'
+            _, data = mail.uid("search", None, criteria)
             if data[0]:
                 all_uids.update(data[0].split())
         return sorted(all_uids)[: config.GMAIL_MAX_RESULTS]

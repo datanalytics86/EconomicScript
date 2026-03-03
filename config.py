@@ -34,6 +34,16 @@ TIMEZONE: str = "America/Santiago"
 # Contraseña para abrir cartolas PDF protegidas (los bancos chilenos suelen usar el RUT)
 PDF_PASSWORD: str = os.getenv("PDF_PASSWORD", "")
 
+# ── SMTP — Reporte diario por email ───────────────────────────────────────────
+# Destinatario del resumen diario (por defecto el mismo usuario de Gmail)
+SMTP_TO: str = os.getenv("SMTP_TO", "")
+# Servidor SMTP (Gmail por defecto)
+SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+# Usuario/contraseña SMTP (por defecto usa las mismas credenciales que IMAP)
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE: str = os.getenv("LOG_FILE", "economicscript.log")
