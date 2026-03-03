@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_BASE_DIR = Path(__file__).parent
+load_dotenv(_BASE_DIR / ".env")
 
 # ── Base de datos ──────────────────────────────────────────────────────────────
-DB_PATH: str = os.getenv("DB_PATH", "finance.db")
-SCHEMA_PATH: str = os.getenv("SCHEMA_PATH", "sql/schema.sql")
+DB_PATH: str = os.getenv("DB_PATH", str(_BASE_DIR / "finance.db"))
+SCHEMA_PATH: str = os.getenv("SCHEMA_PATH", str(_BASE_DIR / "sql" / "schema.sql"))
 
 # ── Gmail IMAP ─────────────────────────────────────────────────────────────────
 IMAP_SERVER: str = os.getenv("IMAP_SERVER", "imap.gmail.com")
@@ -46,4 +48,4 @@ SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-LOG_FILE: str = os.getenv("LOG_FILE", "economicscript.log")
+LOG_FILE: str = os.getenv("LOG_FILE", str(_BASE_DIR / "economicscript.log"))
