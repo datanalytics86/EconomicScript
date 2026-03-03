@@ -5,6 +5,8 @@ on:
     branches: [main, "claude/**"]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 8 * * 1"   # cada lunes a las 8am UTC
 
 jobs:
   test:
@@ -27,6 +29,6 @@ jobs:
           DB_PATH: test.db
 
       - name: Ejecutar tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --cov=utils --cov-fail-under=80
         env:
           DB_PATH: test.db
