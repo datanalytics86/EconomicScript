@@ -52,10 +52,13 @@ def run() -> None:
     db = Database(config.DB_PATH)
     db.init_schema(config.SCHEMA_PATH)
 
-    # 1. Ingesta Gmail: correos del día anterior (ALL SINCE ayer)
-    LOGGER.info("Paso 1/3 — Ingesta Gmail desde %s", yesterday.isoformat())
+    # 1. Ingesta Gmail: solo correos UNSEEN (no leídos aún)
+    # El backfill histórico se hace una vez desde la UI con un date_input.
+    # Usar since_date aquí causaría re-procesar correos ya manejados y
+    # crear copias duplicadas en la carpeta IMAP "Procesado/Finanzas".
+    LOGGER.info("Paso 1/3 — Ingesta Gmail (correos no leídos)")
     ingestor = GmailIngestor(db)
-    summary = ingestor.ingest(since_date=yesterday)
+    summary = ingestor.ingest()
     LOGGER.info(
         "Ingesta completada → encontrados: %(found)s | procesados: %(processed)s | "
         "guardados: %(saved)s | fallidos: %(failed)s",
