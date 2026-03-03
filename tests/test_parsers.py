@@ -5,42 +5,81 @@ from parsers.bci import BCIParser
 from parsers.security import SecurityParser
 
 
-def test_bci_parser_case_1() -> None:
+def test_bci_parser_tc_purchase() -> None:
+    """Notificación real de compra con tarjeta de crédito BCI."""
     parser = BCIParser()
-    body = """Se ha realizado la siguiente transacción:
-Tipo: Compra Nacional
-Monto: $45.890
-Comercio: LIDER EXPRESS 1234
-Tarjeta: **** 5678
-Fecha: 15/01/2025 14:32
+    body = """Hola
+NICOLAS IGNACIO SEBASTIAN ANDRADE SOCIAS
+Realizaste una compra
+con tu tarjeta de crédito.
+
+Número tarjeta crédito ****9406
+Monto $202.502
+Fecha 02/03/2026
+Hora 11:13 horas
+Comercio NEAT GASTO COMUN SAN FELIPE CL
+Cuotas 6
 """
-    tx = parser.parse(body, "m1")
+    tx = parser.parse(body, "tc1")
     assert tx.bank == "BCI"
+    assert tx.amount == 202502
+    assert tx.type == "Compra TC"
+    assert "NEAT" in tx.merchant
+
+
+def test_bci_parser_tc_with_colon() -> None:
+    """Compra TC con formato alternativo (etiquetas con dos puntos)."""
+    parser = BCIParser()
+    body = """Realizaste una compra con tu tarjeta de crédito.
+Monto: $45.890
+Fecha: 15/01/2025
+Hora: 14:32 horas
+Comercio: LIDER EXPRESS 1234
+Cuotas: 1
+"""
+    tx = parser.parse(body, "tc2")
     assert tx.amount == 45890
+    assert tx.merchant == "LIDER EXPRESS 1234"
 
 
-def test_bci_parser_case_2() -> None:
+def test_bci_parser_transfer() -> None:
+    """Notificación real de transferencia de fondos BCI."""
     parser = BCIParser()
-    body = """Tipo: Pago Servicio
-Monto: $1.250.000
-Comercio: AGUAS ANDINAS
-Tarjeta: **** 1234
-Fecha: 16-01-2025 09:10
+    body = """Hola
+Nicolas Ignacio Sebastian Andrade Socias
+Realizaste una transferencia de fondos desde
+tu cuenta N° 46685197
+
+Datos de tu transferencia
+Monto transferido $100.000
+Nombre del destinatario Kathia Silva
+Banco de destino Banco de Chile / Edwards / Credichile
+Cuenta de destino 8002066409
+Fecha de abono 01/03/2026
+Número de comprobante 1134563970
 """
-    tx = parser.parse(body, "m2")
-    assert tx.amount == 1250000
+    tx = parser.parse(body, "tr1")
+    assert tx.bank == "BCI"
+    assert tx.amount == 100000
+    assert tx.type == "Transferencia"
+    assert tx.merchant == "Kathia Silva"
 
 
-def test_bci_parser_case_3() -> None:
+def test_bci_can_parse_transfer_subject() -> None:
     parser = BCIParser()
-    body = """Tipo: Compra Internacional
-Monto: $9.990
-Comercio: NETFLIX
-Tarjeta: **** 1111
-Fecha: 17/01/2025
-"""
-    tx = parser.parse(body, "m3")
-    assert tx.merchant == "NETFLIX"
+    assert parser.can_parse("transferencias@bci.cl", "Aviso de Transferencia de Fondos.", "")
+
+
+def test_bci_can_parse_tc_subject() -> None:
+    parser = BCIParser()
+    assert parser.can_parse(
+        "contacto@bci.cl", "Notificación de uso de tu tarjeta de crédito", ""
+    )
+
+
+def test_bci_can_parse_rejects_other_sender() -> None:
+    parser = BCIParser()
+    assert not parser.can_parse("noreply@gmail.com", "Aviso de Transferencia", "")
 
 
 def test_banco_estado_parser_case_1() -> None:

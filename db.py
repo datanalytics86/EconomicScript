@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Iterable
 
 from models import TransactionRecord
+
+LOGGER = logging.getLogger(__name__)
+_DB_TIMEOUT = 10  # segundos antes de lanzar OperationalError por bloqueo concurrente
 
 
 class Database:
@@ -16,21 +20,36 @@ class Database:
         self.db_path = db_path
 
     def connect(self) -> sqlite3.Connection:
-        """Crea conexión SQLite con row_factory tipo diccionario."""
+        """Crea conexión SQLite con row_factory tipo diccionario y FK activas."""
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=_DB_TIMEOUT)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def init_schema(self, schema_path: str = "sql/schema.sql") -> None:
-        """Inicializa esquema desde archivo SQL."""
+        """Inicializa esquema y aplica migraciones sin pérdida de datos."""
 
-        script = Path(schema_path).read_text(encoding="utf-8")
+        schema_file = Path(schema_path)
+        if not schema_file.exists():
+            raise FileNotFoundError(f"Esquema SQL no encontrado: {schema_path}")
+        script = schema_file.read_text(encoding="utf-8")
         with self.connect() as conn:
             conn.executescript(script)
+        self._run_migrations()
+        LOGGER.info("Esquema inicializado correctamente desde %s", schema_path)
+
+    def _run_migrations(self) -> None:
+        """Agrega columnas nuevas sin perder datos en bases existentes."""
+
+        with self.connect() as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(transactions)")}
+            if "content_hash" not in cols:
+                conn.execute("ALTER TABLE transactions ADD COLUMN content_hash TEXT")
+                LOGGER.info("Migración aplicada: columna content_hash agregada a transactions")
 
     def insert_transactions(self, transactions: Iterable[TransactionRecord]) -> int:
-        """Inserta transacciones y retorna cantidad de filas escritas."""
+        """Inserta transacciones ignorando duplicados. Retorna filas efectivamente escritas."""
 
         rows = [
             (
@@ -43,6 +62,7 @@ class Database:
                 t.raw_text,
                 t.gmail_message_id,
                 t.statement_ref,
+                t.content_hash,
             )
             for t in transactions
         ]
@@ -50,15 +70,18 @@ class Database:
             return 0
 
         with self.connect() as conn:
-            conn.executemany(
+            cursor = conn.executemany(
                 """
                 INSERT OR IGNORE INTO transactions
-                (bank, date, amount, type, merchant, source, raw_text, gmail_message_id, statement_ref)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (bank, date, amount, type, merchant, source, raw_text,
+                 gmail_message_id, statement_ref, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
-            return conn.total_changes
+            inserted = cursor.rowcount
+            LOGGER.debug("Insertadas %s/%s transacciones", inserted, len(rows))
+            return inserted
 
     def save_unprocessed_email(
         self,

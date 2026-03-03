@@ -1,0 +1,29 @@
+# Datos sensibles y credenciales
+.env
+credentials.json
+token.json
+
+# Base de datos local
+*.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
