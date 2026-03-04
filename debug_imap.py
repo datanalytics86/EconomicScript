@@ -1,42 +1,41 @@
+import imaplib
 import config
-from db import Database
-from gmail_ingest import GmailIngestor
 
-db = Database(config.DB_PATH)
-ingestor = GmailIngestor(db)
-mail = ingestor._connect()
+mail = imaplib.IMAP4_SSL(config.IMAP_SERVER, config.IMAP_PORT)
+mail.login(config.IMAP_USER, config.IMAP_PASSWORD)
 
-mail.select("INBOX")
+# 1. Listar todas las carpetas
+print("=== CARPETAS DISPONIBLES ===")
+_, folders = mail.list()
+for f in folders:
+    print(" ", f.decode(errors="replace"))
 
-# Palabras clave financieras en español
-keywords = [
-    "cuenta", "saldo", "pago", "transferencia", "comprobante",
-    "factura", "boleta", "resumen", "cartola", "movimiento",
-    "tarjeta", "credito", "debito", "cuota"
+# 2. Buscar por remitente real en INBOX y Spam
+senders = [
+    "transferencias@bci.cl",
+    "contacto@bci.cl",
+    "bci.cl",
+    "bancoestado.cl",
+    "bancosecurity.cl",
+    "security.cl",
 ]
 
-print("=== BÚSQUEDA POR ASUNTO (español) ===")
-found_any = False
-for kw in keywords:
-    _, data = mail.uid("search", None, f'SUBJECT "{kw}"')
-    uids = data[0].split()
-    if uids:
-        found_any = True
-        print(f"\n'{kw}': {len(uids)} correos")
-        for uid in uids[:3]:
-            _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
-            if msg_data and msg_data[0]:
-                print(" ", msg_data[0][1].decode(errors="replace").strip().replace("\n", " | "))
-
-if not found_any:
-    print("No se encontraron correos con esas palabras clave.")
-    print("\n=== ÚLTIMOS 10 CORREOS EN INBOX ===")
-    _, data = mail.uid("search", None, "ALL")
-    all_uids = data[0].split()
-    print(f"Total: {len(all_uids)} correos")
-    for uid in all_uids[-10:]:
-        _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
-        if msg_data and msg_data[0]:
-            print(" ", msg_data[0][1].decode(errors="replace").strip().replace("\n", " | "))
+for folder in ["INBOX", "[Gmail]/Spam", "[Gmail]/All Mail", "Spam", "Junk"]:
+    try:
+        status, _ = mail.select(folder, readonly=True)
+        if status != "OK":
+            continue
+        print(f"\n=== {folder} ===")
+        for sender in senders:
+            _, data = mail.uid("search", None, f'FROM "{sender}"')
+            uids = data[0].split() if data[0] else []
+            if uids:
+                print(f"  FROM {sender}: {len(uids)} correos")
+                for uid in uids[:2]:
+                    _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    if msg_data and msg_data[0]:
+                        print("   ", msg_data[0][1].decode(errors="replace").strip().replace("\n", " | "))
+    except Exception as e:
+        print(f"  {folder}: {e}")
 
 mail.logout()
