@@ -68,15 +68,7 @@ class BancoEstadoParser(BankParser):
     )
 
     def can_parse(self, sender: str, subject: str, body: str) -> bool:
-        if not any(p in sender.lower() for p in self.sender_patterns):
-            return False
-        body_l = body.lower()
-        return (
-            "compra" in body_l
-            or "transferencia" in body_l
-            or "pago de producto" in body_l
-            or "monto pagado" in body_l
-        )
+        return any(p in sender.lower() for p in self.sender_patterns)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
         # 1. Compra TC (notificación directa con monto en línea)
