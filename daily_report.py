@@ -150,12 +150,12 @@ def send_daily_report(report_date: date | None = None) -> None:
         return
 
     smtp_user = config.SMTP_USER or config.IMAP_USER
-    smtp_password = config.SMTP_PASSWORD or config.IMAP_PASSWORD
+    smtp_password = config.SMTP_PASSWORD
 
     if not smtp_user or not smtp_password:
         LOGGER.error(
             "Credenciales SMTP no disponibles. "
-            "Configura IMAP_USER/IMAP_PASSWORD o SMTP_USER/SMTP_PASSWORD en .env"
+            "Configura SMTP_USER/SMTP_PASSWORD en .env (usa una App Password de Google)"
         )
         return
 
