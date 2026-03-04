@@ -137,7 +137,7 @@ class GmailIngestor:
         if since_date is not None:
             # Formato IMAP: DD-Mon-YYYY, ej: "24-Feb-2026"
             imap_date = since_date.strftime("%d-%b-%Y")
-            criteria_prefix = f'(ALL SINCE "{imap_date}"'
+            criteria_prefix = f'(SINCE "{imap_date}"'
         else:
             criteria_prefix = "(UNSEEN"
 
