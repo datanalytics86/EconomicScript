@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import email
+import email.header
 import html as _html_stdlib
 import imaplib
 import logging
@@ -83,7 +84,11 @@ class GmailIngestor:
                     raw_email = data[0][1]
                     msg = email.message_from_bytes(raw_email)
                     sender = msg.get("From", "")
-                    subject = msg.get("Subject", "")
+                    subject = str(
+                        email.header.make_header(
+                            email.header.decode_header(msg.get("Subject", ""))
+                        )
+                    )
                     body = self._extract_body(msg)
 
                     parser = next(

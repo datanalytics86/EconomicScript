@@ -70,6 +70,8 @@ class BCIParser(BankParser):
             or "aviso de transferencia" in subject_l
             or "transacción" in body_l
             or "transferencia de fondos" in body_l
+            or "realizaste una compra" in body_l
+            or "tarjeta de crédito" in body_l
         )
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
