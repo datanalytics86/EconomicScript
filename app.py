@@ -161,9 +161,9 @@ def _render_charts(df: pd.DataFrame) -> None:
 def _render_gmail_ingest() -> None:
     """Sección para disparar la ingesta de Gmail con filtro de fecha."""
     with st.expander("Ingesta de Gmail", expanded=False):
-        if not config.IMAP_USER or not config.IMAP_PASSWORD:
+        if not config.IMAP_USER or not config.OAUTH_CLIENT_ID or not config.OAUTH_REFRESH_TOKEN:
             st.warning(
-                "Configura IMAP_USER e IMAP_PASSWORD en el archivo .env para usar esta función."
+                "Configura IMAP_USER, OAUTH_CLIENT_ID y OAUTH_REFRESH_TOKEN en el archivo .env para usar esta función."
             )
             return
 
