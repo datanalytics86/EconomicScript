@@ -48,6 +48,16 @@ class BancoEstadoParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Pago de producto: cuota crédito, pago tarjeta, etc.
+    # "has realizado un pago de producto: ... Monto pagado:$X ... Fecha y hora: DD/MM/YYYY"
+    _PATTERN_PAGO = re.compile(
+        r"pago de producto.*?"
+        r"Producto\s*:?\s*(?P<merchant>[^\n]+).*?"
+        r"Monto pagado\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
+        r"Fecha\s*y\s*hora\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Fallback: campo e inline en misma línea (etiqueta: valor)
     _PATTERN_LEGACY = re.compile(
         r"(?:Tipo|Glosa):\s*(?P<type>.+?)\s*[\n\r]"
@@ -58,7 +68,15 @@ class BancoEstadoParser(BankParser):
     )
 
     def can_parse(self, sender: str, subject: str, body: str) -> bool:
-        return any(p in sender.lower() for p in self.sender_patterns)
+        if not any(p in sender.lower() for p in self.sender_patterns):
+            return False
+        body_l = body.lower()
+        return (
+            "compra" in body_l
+            or "transferencia" in body_l
+            or "pago de producto" in body_l
+            or "monto pagado" in body_l
+        )
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
         # 1. Compra TC (notificación directa con monto en línea)
@@ -75,7 +93,21 @@ class BancoEstadoParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # 2. Transferencia (formato campo-por-línea real)
+        # 2. Pago de producto (cuota crédito, pago tarjeta, etc.)
+        m = self._PATTERN_PAGO.search(body)
+        if m:
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=normalize_clp_amount(m.group("amount")),
+                type="Pago Producto",
+                merchant=m.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 3. Transferencia (formato campo-por-línea real)
         m = self._PATTERN_TRANSFER.search(body)
         if m:
             return TransactionRecord(
@@ -89,7 +121,7 @@ class BancoEstadoParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # 3. Formato legado etiqueta:valor
+        # 4. Formato legado etiqueta:valor
         m = self._PATTERN_LEGACY.search(body)
         if m:
             return TransactionRecord(

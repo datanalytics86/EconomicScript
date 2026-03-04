@@ -195,7 +195,9 @@ class GmailIngestor:
                     html_parts.append(text)
 
         if plain:
-            return plain[0]
+            # Los correos text/plain de algunos bancos incluyen entidades HTML
+            # (p.ej. &#x2F; en lugar de /) — decodificar antes de parsear
+            return _html_stdlib.unescape(plain[0])
         if html_parts:
             return GmailIngestor._html_to_text(html_parts[0])
         return ""
@@ -207,6 +209,9 @@ class GmailIngestor:
         Reemplaza etiquetas de bloque y celdas de tabla con saltos/espacios
         antes de eliminar el resto del markup.
         """
+        # Elimina bloques <style> y <script> completos (CSS/JS no aportan datos)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", html_body, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
         # Etiquetas de cierre de bloque → salto de línea
         text = re.sub(
             r"<(?:br\s*/?|/p|/div|/tr|/li|/h[1-6])[^>]*>",

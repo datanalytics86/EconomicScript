@@ -33,8 +33,17 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
-    # Notificación de compra con tarjeta de crédito — dos layouts posibles:
-    # Layout HTML (email real): secuencia Hora → merchant → Comercio en líneas separadas
+    # Notificación de compra con tarjeta de crédito — tres layouts posibles:
+
+    # Layout moderno (etiqueta sola en su línea, valor en la siguiente):
+    #   Monto\n$12.199\nFecha\n04/03/2026\nHora\nHH:MM horas\nComercio\nNOMBRE
+    _PATTERN_TC_LABEL = re.compile(
+        r"Monto\s*\n\s*\$(?P<amount>[\d\.]+).*?"
+        r"Fecha\s*\n\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        r"Comercio\s*(?::?\s*|\n\s*)(?P<merchant>[^\n]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Layout HTML (email antiguo): secuencia Hora → merchant → Comercio en líneas separadas
     #   Hora 13:43 horas\nDP *FALABELLA.COM\nComercio\nSANTIAGO CL
     _PATTERN_TC_PRE = re.compile(
         r"Monto\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
@@ -78,8 +87,8 @@ class BCIParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # Primero intenta layout HTML (merchant antes de "Comercio"), luego inline/colon
-        for pattern in (self._PATTERN_TC_PRE, self._PATTERN_TC_POST):
+        # Primero intenta layout moderno (etiqueta en su línea), luego HTML legacy, luego inline
+        for pattern in (self._PATTERN_TC_LABEL, self._PATTERN_TC_PRE, self._PATTERN_TC_POST):
             match = pattern.search(body)
             if match:
                 return TransactionRecord(
