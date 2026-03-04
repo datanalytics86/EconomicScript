@@ -158,7 +158,7 @@ def _render_charts(df: pd.DataFrame) -> None:
 
 # ── Ingesta Gmail ──────────────────────────────────────────────────────────────
 
-def _render_gmail_ingest() -> None:
+def _render_gmail_ingest(conn: sqlite3.Connection) -> None:
     """Sección para disparar la ingesta de Gmail con filtro de fecha."""
     with st.expander("Ingesta de Gmail", expanded=False):
         if not config.IMAP_USER or not config.OAUTH_CLIENT_ID or not config.OAUTH_REFRESH_TOKEN:
@@ -167,35 +167,32 @@ def _render_gmail_ingest() -> None:
             )
             return
 
+        last_gmail = conn.execute(
+            "SELECT MAX(date) AS d FROM transactions WHERE source='gmail'"
+        ).fetchone()["d"]
+        if last_gmail:
+            st.caption(f"Último correo Gmail en DB: **{last_gmail}**")
+
         st.write(
             "Busca correos de notificaciones bancarias (BCI, BancoEstado, Security) "
             "y los importa a la base de datos. La deduplicación es automática."
         )
 
-        default_since = date.today() - timedelta(days=7)
-        since = st.date_input(
-            "Procesar correos desde",
-            value=default_since,
-            max_value=date.today(),
-            help="Se incluirán correos leídos y no leídos desde esta fecha.",
-            key="gmail_since_date",
-        )
-
-        if st.button("Ejecutar ingesta de Gmail", key="btn_gmail_ingest"):
-            progress_bar = st.progress(0, text="Conectando a Gmail…")
+        def _run_ingest(since_date_arg: date | None) -> None:
+            progress_bar = st.progress(0)
             status_slot = st.empty()
+            status_slot.info("Conectando a Gmail…")
             try:
                 db = Database(config.DB_PATH)
                 ingestor = GmailIngestor(db)
 
                 def _update_progress(current: int, total: int, msg: str) -> None:
                     pct = current / total if total else 1.0
-                    progress_bar.progress(pct, text=msg)
-                    if total:
-                        status_slot.caption(f"{current} / {total} correos procesados")
+                    progress_bar.progress(pct)
+                    status_slot.caption(f"{msg}  ({current}/{total})")
 
-                summary = ingestor.ingest(since_date=since, progress_callback=_update_progress)
-                progress_bar.progress(1.0, text="¡Ingesta completada!")
+                summary = ingestor.ingest(since_date=since_date_arg, progress_callback=_update_progress)
+                progress_bar.progress(1.0)
                 status_slot.empty()
                 st.success(
                     f"Ingesta completada — "
@@ -214,6 +211,26 @@ def _render_gmail_ingest() -> None:
                 progress_bar.empty()
                 status_slot.empty()
                 st.error(f"Error durante la ingesta: {exc}")
+
+        # ── Modo incremental (uso diario) ──────────────────────────────────────
+        st.write("**Modo rápido** — solo correos no leídos (uso diario):")
+        if st.button("Actualizar (solo correos nuevos)", key="btn_gmail_unseen"):
+            _run_ingest(since_date_arg=None)
+
+        st.divider()
+
+        # ── Modo histórico ─────────────────────────────────────────────────────
+        st.write("**Modo histórico** — re-descarga todos los correos desde una fecha:")
+        default_since = date.today() - timedelta(days=7)
+        since = st.date_input(
+            "Procesar correos desde",
+            value=default_since,
+            max_value=date.today(),
+            help="Se incluirán correos leídos y no leídos desde esta fecha.",
+            key="gmail_since_date",
+        )
+        if st.button("Re-ingestar desde fecha", key="btn_gmail_ingest"):
+            _run_ingest(since_date_arg=since)
 
 
 # ── Carga de cartolas ──────────────────────────────────────────────────────────
@@ -461,7 +478,7 @@ def main() -> None:
         _render_sidebar(conn)
 
         # Secciones siempre visibles (independiente de si hay transacciones)
-        _render_gmail_ingest()
+        _render_gmail_ingest(conn)
         _render_cartola_upload()
         st.divider()
         _render_category_manager(conn)
