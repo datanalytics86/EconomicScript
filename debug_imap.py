@@ -6,22 +6,21 @@ db = Database(config.DB_PATH)
 ingestor = GmailIngestor(db)
 mail = ingestor._connect()
 
-# Buscar en la carpeta donde están los correos procesados
-mail.select('"Procesado/Finanzas"')
-_, data = mail.uid("search", None, "ALL")
-uids = data[0].split()
-print(f"Procesado/Finanzas: {len(uids)} correos")
+mail.select("INBOX")
 
-# Mostrar remitentes únicos
-print("\n=== REMITENTES ===")
-remitentes = set()
-for uid in uids:
-    _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM)])")
-    if msg_data and msg_data[0]:
-        linea = msg_data[0][1].decode(errors="replace").strip()
-        remitentes.add(linea)
+# Buscar por palabras clave bancarias en el asunto
+keywords = ["cartola", "estado de cuenta", "movimiento", "transacci", "bci", "bancoestado", "security", "banco"]
 
-for r in sorted(remitentes):
-    print(r)
+print("=== BÚSQUEDA POR ASUNTO ===")
+for kw in keywords:
+    _, data = mail.uid("search", None, f'SUBJECT "{kw}"')
+    uids = data[0].split()
+    if uids:
+        print(f"\n'{kw}': {len(uids)} correos")
+        # Mostrar los primeros 3
+        for uid in uids[:3]:
+            _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
+            if msg_data and msg_data[0]:
+                print(" ", msg_data[0][1].decode(errors="replace").strip().replace("\n", " | "))
 
 mail.logout()
