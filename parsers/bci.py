@@ -33,9 +33,18 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
-    # Notificación de compra con tarjeta de crédito
-    # Campos: Monto / Fecha / Comercio
-    _PATTERN_TC = re.compile(
+    # Notificación de compra con tarjeta de crédito — dos layouts posibles:
+    # Layout HTML (email real): secuencia Hora → merchant → Comercio en líneas separadas
+    #   Hora 13:43 horas\nDP *FALABELLA.COM\nComercio\nSANTIAGO CL
+    _PATTERN_TC_PRE = re.compile(
+        r"Monto\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
+        r"Fecha\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        r"Hora\s+[^\n]+\s*\n\s*(?P<merchant>[^\n]+)\s*\n\s*Comercio",
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Layout inline (text/plain o colon): merchant en la misma línea que "Comercio"
+    #   Comercio DP *FALABELLA.COM SANTIAGO CL  /  Comercio: LIDER EXPRESS 1234
+    _PATTERN_TC_POST = re.compile(
         r"Monto\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
         r"Fecha\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
         r"Comercio\s*:?\s*(?P<merchant>[^\n]+)",
@@ -69,17 +78,19 @@ class BCIParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        match = self._PATTERN_TC.search(body)
-        if match:
-            return TransactionRecord(
-                bank=self.bank_name,
-                date=parse_chilean_date(match.group("date")),
-                amount=normalize_clp_amount(match.group("amount")),
-                type="Compra TC",
-                merchant=match.group("merchant").strip(),
-                source="gmail",
-                raw_text=body,
-                gmail_message_id=gmail_message_id,
-            )
+        # Primero intenta layout HTML (merchant antes de "Comercio"), luego inline/colon
+        for pattern in (self._PATTERN_TC_PRE, self._PATTERN_TC_POST):
+            match = pattern.search(body)
+            if match:
+                return TransactionRecord(
+                    bank=self.bank_name,
+                    date=parse_chilean_date(match.group("date")),
+                    amount=normalize_clp_amount(match.group("amount")),
+                    type="Compra TC",
+                    merchant=match.group("merchant").strip(),
+                    source="gmail",
+                    raw_text=body,
+                    gmail_message_id=gmail_message_id,
+                )
 
         raise ValueError("No fue posible parsear correo BCI")

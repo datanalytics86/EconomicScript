@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 
 SANTIAGO_TZ = ZoneInfo("America/Santiago")
 DATE_FORMATS = (
+    "%d/%m/%Y %H:%M:%S",  # BancoEstado transferencia: 27/02/2026 12:06:28
     "%d/%m/%Y %H:%M",
+    "%d-%m-%Y %H:%M:%S",
     "%d-%m-%Y %H:%M",
     "%d/%m/%Y",
     "%d-%m-%Y",

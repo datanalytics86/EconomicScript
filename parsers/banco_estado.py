@@ -38,12 +38,13 @@ class BancoEstadoParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
-    # Transferencia (saliente o entrante): campo en una línea, valor en la siguiente
-    # Captura "Para\nNAME" para salientes y "de nuestro(a) cliente\nNAME" para entrantes
+    # Transferencia (saliente o entrante)
+    # Formato real: "Monto $X" y "Para NAME" en misma línea; fecha al final sin label
+    # Ej: "Monto $1.200.000 \n Para Nicolas Andrade \n ... \n 27/02/2026 12:06:28"
     _PATTERN_TRANSFER = re.compile(
-        r"Monto\s*[\n\r]\s*\$?\s*(?P<amount>[\d\.]+).*?"
-        r"(?:Para|de\s+nuestro\(a\)\s+cliente)\s*[\n\r]?\s*(?P<merchant>[^\n\r]+?)[\n\r].*?"
-        r"Fecha\s+y\s+hora\s*[\n\r]\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        r"Monto\s+\$?\s*(?P<amount>[\d\.]+).*?"
+        r"(?:Para|de\s+nuestro\(a\)\s+cliente)\s+(?P<merchant>[^\n\r]+).*?"
+        r"(?:Fecha\s+y\s+hora\s*:?\s*)?(?P<date>\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)",
         re.IGNORECASE | re.DOTALL,
     )
 
