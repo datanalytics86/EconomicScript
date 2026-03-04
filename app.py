@@ -179,20 +179,19 @@ def _render_gmail_ingest(conn: sqlite3.Connection) -> None:
         )
 
         def _run_ingest(since_date_arg: date | None) -> None:
-            progress_bar = st.progress(0)
+            progress_bar = st.progress(0, text="Conectando a Gmail…")
             status_slot = st.empty()
-            status_slot.info("Conectando a Gmail…")
             try:
                 db = Database(config.DB_PATH)
                 ingestor = GmailIngestor(db)
 
                 def _update_progress(current: int, total: int, msg: str) -> None:
                     pct = current / total if total else 1.0
-                    progress_bar.progress(pct)
-                    status_slot.caption(f"{msg}  ({current}/{total})")
+                    progress_bar.progress(pct, text=msg)
+                    status_slot.caption(f"({current}/{total})")
 
                 summary = ingestor.ingest(since_date=since_date_arg, progress_callback=_update_progress)
-                progress_bar.progress(1.0)
+                progress_bar.progress(1.0, text="Ingesta completada")
                 status_slot.empty()
                 st.success(
                     f"Ingesta completada — "
