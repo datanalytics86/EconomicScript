@@ -6,26 +6,22 @@ db = Database(config.DB_PATH)
 ingestor = GmailIngestor(db)
 mail = ingestor._connect()
 
-# 1. Listar todas las carpetas disponibles
-print("=== CARPETAS ===")
-_, folders = mail.list()
-for f in folders:
-    print(f.decode())
-
-# 2. Ver cuántos correos hay en INBOX
-mail.select("INBOX")
+# Buscar en la carpeta donde están los correos procesados
+mail.select('"Procesado/Finanzas"')
 _, data = mail.uid("search", None, "ALL")
 uids = data[0].split()
-print(f"\n=== INBOX: {len(uids)} correos ===")
+print(f"Procesado/Finanzas: {len(uids)} correos")
 
-# 3. Mostrar remitentes de los últimos 10 correos
-if uids:
-    sample = uids[-10:]
-    print("\n=== ÚLTIMOS REMITENTES ===")
-    for uid in sample:
-        _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
-        if msg_data and msg_data[0]:
-            print(msg_data[0][1].decode(errors="replace").strip())
-            print("---")
+# Mostrar remitentes únicos
+print("\n=== REMITENTES ===")
+remitentes = set()
+for uid in uids:
+    _, msg_data = mail.uid("fetch", uid, "(BODY[HEADER.FIELDS (FROM)])")
+    if msg_data and msg_data[0]:
+        linea = msg_data[0][1].decode(errors="replace").strip()
+        remitentes.add(linea)
+
+for r in sorted(remitentes):
+    print(r)
 
 mail.logout()
