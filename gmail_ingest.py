@@ -9,6 +9,9 @@ import logging
 import re
 from datetime import date
 
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+
 import config
 from db import Database
 from models import TransactionRecord
@@ -26,14 +29,25 @@ class GmailIngestor:
         self.parsers = [BCIParser(), BancoEstadoParser(), SecurityParser()]
 
     def _connect(self) -> imaplib.IMAP4_SSL:
-        """Crea y retorna una conexión IMAP autenticada via App Password."""
-        if not config.IMAP_USER or not config.IMAP_PASSWORD:
+        """Crea y retorna una conexión IMAP autenticada via OAuth2 (XOAUTH2)."""
+        if not config.IMAP_USER or not config.OAUTH_CLIENT_ID or not config.OAUTH_CLIENT_SECRET or not config.OAUTH_REFRESH_TOKEN:
             raise ValueError(
-                "IMAP_USER e IMAP_PASSWORD deben estar definidos en el archivo .env"
+                "IMAP_USER, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET y OAUTH_REFRESH_TOKEN "
+                "deben estar definidos en el archivo .env"
             )
+        creds = Credentials(
+            token=None,
+            refresh_token=config.OAUTH_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=config.OAUTH_CLIENT_ID,
+            client_secret=config.OAUTH_CLIENT_SECRET,
+            scopes=["https://mail.google.com/"],
+        )
+        creds.refresh(Request())
+        auth_string = f"user={config.IMAP_USER}\x01auth=Bearer {creds.token}\x01\x01"
         mail = imaplib.IMAP4_SSL(config.IMAP_SERVER, config.IMAP_PORT)
-        mail.login(config.IMAP_USER, config.IMAP_PASSWORD)
-        LOGGER.info("Conexión IMAP establecida con %s", config.IMAP_SERVER)
+        mail.authenticate("XOAUTH2", lambda _: auth_string.encode())
+        LOGGER.info("Conexión IMAP OAuth2 establecida con %s", config.IMAP_SERVER)
         return mail
 
     def ingest(self, since_date: date | None = None) -> dict[str, int]:

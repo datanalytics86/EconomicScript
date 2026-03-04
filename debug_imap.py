@@ -1,8 +1,21 @@
 import imaplib
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 import config
 
+creds = Credentials(
+    token=None,
+    refresh_token=config.OAUTH_REFRESH_TOKEN,
+    token_uri="https://oauth2.googleapis.com/token",
+    client_id=config.OAUTH_CLIENT_ID,
+    client_secret=config.OAUTH_CLIENT_SECRET,
+    scopes=["https://mail.google.com/"],
+)
+creds.refresh(Request())
+auth_string = f"user={config.IMAP_USER}\x01auth=Bearer {creds.token}\x01\x01"
 mail = imaplib.IMAP4_SSL(config.IMAP_SERVER, config.IMAP_PORT)
-mail.login(config.IMAP_USER, config.IMAP_PASSWORD)
+mail.authenticate("XOAUTH2", lambda _: auth_string.encode())
+print("Conexión OAuth2 OK")
 
 # 1. Listar todas las carpetas
 print("=== CARPETAS DISPONIBLES ===")
