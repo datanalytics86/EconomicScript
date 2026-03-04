@@ -8,6 +8,7 @@ import html as _html_stdlib
 import imaplib
 import logging
 import re
+from collections.abc import Callable
 from datetime import date
 
 from google.auth.transport.requests import Request
@@ -51,13 +52,19 @@ class GmailIngestor:
         LOGGER.info("Conexión IMAP OAuth2 establecida con %s", config.IMAP_SERVER)
         return mail
 
-    def ingest(self, since_date: date | None = None) -> dict[str, int]:
+    def ingest(
+        self,
+        since_date: date | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> dict[str, int]:
         """Procesa correos Gmail vía IMAP. Retorna resumen con conteos por estado.
 
         Args:
             since_date: Si se indica, busca TODOS los correos (leídos y no leídos)
                         desde esa fecha en adelante. Útil para carga inicial histórica.
                         Si es None, busca solo correos no leídos (comportamiento diario).
+            progress_callback: Función opcional ``(current, total, message)`` llamada
+                               después de procesar cada correo. Útil para barras de progreso.
         """
 
         mail = self._connect()
@@ -77,7 +84,10 @@ class GmailIngestor:
                 "saved": 0,
             }
 
-            for uid in uids:
+            if progress_callback and uids:
+                progress_callback(0, len(uids), f"Encontrados {len(uids)} correos. Iniciando procesamiento…")
+
+            for i, uid in enumerate(uids):
                 sender = subject = body = ""
                 try:
                     _, data = mail.uid("fetch", uid, "(RFC822)")
@@ -111,6 +121,13 @@ class GmailIngestor:
                     LOGGER.exception("Error procesando mensaje %s: %s", uid, exc)
                     summary["failed"] += 1
                     self.db.save_unprocessed_email(uid.decode(), sender, subject, body, str(exc))
+
+                if progress_callback:
+                    progress_callback(
+                        i + 1,
+                        len(uids),
+                        f"Correo {i + 1} de {len(uids)} procesado…",
+                    )
 
             summary["saved"] = self.db.insert_transactions(parsed_transactions)
             LOGGER.info(

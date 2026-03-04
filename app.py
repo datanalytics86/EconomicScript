@@ -182,26 +182,38 @@ def _render_gmail_ingest() -> None:
         )
 
         if st.button("Ejecutar ingesta de Gmail", key="btn_gmail_ingest"):
-            with st.spinner("Conectando a Gmail y procesando correos…"):
-                try:
-                    db = Database(config.DB_PATH)
-                    ingestor = GmailIngestor(db)
-                    summary = ingestor.ingest(since_date=since)
-                    st.success(
-                        f"Ingesta completada — "
-                        f"encontrados: **{summary['found']}** | "
-                        f"procesados: **{summary['processed']}** | "
-                        f"guardados: **{summary['saved']}** | "
-                        f"fallidos: **{summary['failed']}**"
+            progress_bar = st.progress(0, text="Conectando a Gmail…")
+            status_slot = st.empty()
+            try:
+                db = Database(config.DB_PATH)
+                ingestor = GmailIngestor(db)
+
+                def _update_progress(current: int, total: int, msg: str) -> None:
+                    pct = current / total if total else 1.0
+                    progress_bar.progress(pct, text=msg)
+                    if total:
+                        status_slot.caption(f"{current} / {total} correos procesados")
+
+                summary = ingestor.ingest(since_date=since, progress_callback=_update_progress)
+                progress_bar.progress(1.0, text="¡Ingesta completada!")
+                status_slot.empty()
+                st.success(
+                    f"Ingesta completada — "
+                    f"encontrados: **{summary['found']}** | "
+                    f"procesados: **{summary['processed']}** | "
+                    f"guardados: **{summary['saved']}** | "
+                    f"fallidos: **{summary['failed']}**"
+                )
+                if summary.get("no_parser", 0):
+                    st.info(
+                        f"{summary['no_parser']} correos sin parser compatible "
+                        "(guardados en 'Correos sin procesar')."
                     )
-                    if summary.get("no_parser", 0):
-                        st.info(
-                            f"{summary['no_parser']} correos sin parser compatible "
-                            "(guardados en 'Correos sin procesar')."
-                        )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Error durante la ingesta: {exc}")
+                st.rerun()
+            except Exception as exc:
+                progress_bar.empty()
+                status_slot.empty()
+                st.error(f"Error durante la ingesta: {exc}")
 
 
 # ── Carga de cartolas ──────────────────────────────────────────────────────────
