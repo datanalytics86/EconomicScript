@@ -110,24 +110,26 @@ class GmailIngestor:
                         self.db.save_unprocessed_email(
                             uid.decode(), sender, subject, body, "Sin parser compatible"
                         )
-                        continue
-
-                    transaction = parser.parse(body=body, gmail_message_id=uid.decode())
-                    parsed_transactions.append(transaction)
-                    self._mark_as_processed(mail, uid)
-                    summary["processed"] += 1
+                    else:
+                        transaction = parser.parse(body=body, gmail_message_id=uid.decode())
+                        parsed_transactions.append(transaction)
+                        self._mark_as_processed(mail, uid)
+                        summary["processed"] += 1
 
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.exception("Error procesando mensaje %s: %s", uid, exc)
                     summary["failed"] += 1
                     self.db.save_unprocessed_email(uid.decode(), sender, subject, body, str(exc))
-
-                if progress_callback:
-                    progress_callback(
-                        i + 1,
-                        len(uids),
-                        f"Correo {i + 1} de {len(uids)} procesado…",
-                    )
+                finally:
+                    if progress_callback:
+                        try:
+                            progress_callback(
+                                i + 1,
+                                len(uids),
+                                f"Correo {i + 1} de {len(uids)} procesado…",
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass  # nunca dejar que la UI detenga el loop
 
             summary["saved"] = self.db.insert_transactions(parsed_transactions)
             LOGGER.info(
