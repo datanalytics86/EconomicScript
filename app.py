@@ -492,7 +492,7 @@ def main() -> None:
             )
             return
 
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce").dt.tz_convert(config.TIMEZONE)
 
         _render_kpis(df)
         st.divider()
