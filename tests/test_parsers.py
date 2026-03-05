@@ -103,6 +103,47 @@ def test_bci_transfer_real_format() -> None:
     assert tx.merchant == "Nicolas Andrade"
 
 
+def test_bci_transfer_incoming_format() -> None:
+    """Transferencia entrante BCI: Razón social como remitente, montos con coma."""
+    parser = BCIParser()
+    body = (
+        "Hola\nnicolas andrade\n"
+        "Has recibido una transferencia de fondos de DEEP PRO BUSINESS SOLUTIO NS SPA "
+        "hacia tu cuenta del BCI-TBANC-NOVA.\n"
+        "Detalle de la transferencia\n"
+        "Origen\n"
+        "Razón social:\n"
+        "DEEP PRO BUSINESS SOLUTIO NS SPA\n"
+        "RUT:\n"
+        "77923111-9\n"
+        "Cuenta:\n"
+        "BCI/TBANC/NOVA\n"
+        "Destino\n"
+        "Nombre:\n"
+        "nicolas andrade\n"
+        "Monto transferido:\n"
+        "$ 1,380,000\n"
+        "Nº de cuenta:\n"
+        "000000000046685197\n"
+        "Banco:\n"
+        "BCI-TBANC-NOVA\n"
+        "Nº de comprobante:\n"
+        "94103078\n"
+        "Fecha:\n"
+        "30/03/2025\n"
+        "Hora:\n"
+        "14:20\n"
+    )
+    tx = parser.parse(body, "bci_tr_incoming_1")
+    assert tx.bank == "BCI"
+    assert tx.amount == 1380000
+    assert tx.type == "Transferencia Entrante"
+    assert tx.merchant == "DEEP PRO BUSINESS SOLUTIO NS SPA"
+    assert tx.date.day == 30
+    assert tx.date.month == 3
+    assert tx.date.year == 2025
+
+
 def test_bci_can_parse_transfer_sender() -> None:
     assert BCIParser().can_parse("transferencias@bci.cl", "Aviso de Transferencia de Fondos.", "")
 

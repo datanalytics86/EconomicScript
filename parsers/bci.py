@@ -5,8 +5,9 @@ Soporta dos tipos de notificación:
   - Aviso de transferencia de fondos (from: transferencias@bci.cl)
 
 Formato real observado en muestras:
-  TC:          Monto $202.502 / Fecha 02/03/2026 / Comercio XXXXX
-  Transferencia: Monto transferido $100.000 / Nombre del destinatario XXX / Fecha de abono 01/03/2026
+  TC:                    Monto $202.502 / Fecha 02/03/2026 / Comercio XXXXX
+  Transferencia saliente: Monto transferido $100.000 / Nombre del destinatario XXX / Fecha de abono 01/03/2026
+  Transferencia entrante: Razón social: EMPRESA SPA / Monto transferido: $ 1,380,000 / Fecha: 30/03/2025
 """
 
 from __future__ import annotations
@@ -24,12 +25,21 @@ class BCIParser(BankParser):
     bank_name = "BCI"
     sender_patterns = ("@bci.cl",)
 
-    # Aviso de transferencia de fondos
-    # Campos: Monto transferido / Nombre del destinatario / Fecha de abono
+    # Transferencia saliente — layout estándar
+    # Monto transferido $100.000 / Nombre del destinatario XXX / Fecha de abono DD/MM/YYYY
     _PATTERN_TRANSFER = re.compile(
-        r"Monto transferido\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
+        r"Monto transferido\s*:?\s*\$?\s*(?P<amount>[\d\.,]+).*?"
         r"Nombre del destinatario\s*:?\s*(?P<merchant>[^\n]+).*?"
         r"Fecha de abono\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    # Transferencia entrante — layout campo-por-línea
+    # Razón social:\nEMPRESA SPA\n...\nMonto transferido:\n$ 1,380,000\n...\nFecha:\nDD/MM/YYYY
+    _PATTERN_TRANSFER_INCOMING = re.compile(
+        r"Raz[oó]n\s+social\s*:?\s*\n\s*(?P<merchant>[^\n]+).*?"
+        r"Monto\s+transferido\s*:?\s*\n?\s*\$?\s*(?P<amount>[\d\.,]+).*?"
+        r"Fecha\s*:?\s*\n?\s*(?P<date>\d{2}/\d{2}/\d{4})",
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -75,7 +85,21 @@ class BCIParser(BankParser):
         )
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
-        # Transferencia tiene prioridad (patrón más específico)
+        # Transferencia entrante (Razón social como remitente) — tiene prioridad sobre saliente
+        match = self._PATTERN_TRANSFER_INCOMING.search(body)
+        if match:
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(match.group("date")),
+                amount=normalize_clp_amount(match.group("amount")),
+                type="Transferencia Entrante",
+                merchant=match.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # Transferencia saliente (Nombre del destinatario)
         match = self._PATTERN_TRANSFER.search(body)
         if match:
             return TransactionRecord(
