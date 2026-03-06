@@ -102,3 +102,59 @@ class Database:
                 """,
                 (gmail_message_id, sender, subject, raw_text, error_reason),
             )
+
+
+# ── Funciones de soporte para el dashboard ─────────────────────────────────────
+
+def get_transactions_for_export(
+    conn: sqlite3.Connection,
+    since=None,
+    until=None,
+    bank: str | None = None,
+    uncategorized_only: bool = False,
+) -> list[dict]:
+    """Devuelve transacciones como lista de dicts para exportar a Excel."""
+    filters: list[str] = []
+    params: list = []
+    if since:
+        filters.append("DATE(t.date) >= ?")
+        params.append(since.isoformat() if hasattr(since, "isoformat") else str(since))
+    if until:
+        filters.append("DATE(t.date) <= ?")
+        params.append(until.isoformat() if hasattr(until, "isoformat") else str(until))
+    if bank:
+        filters.append("t.bank = ?")
+        params.append(bank)
+    if uncategorized_only:
+        filters.append("t.category_id IS NULL")
+    where = ("WHERE " + " AND ".join(filters)) if filters else ""
+    rows = conn.execute(
+        f"""
+        SELECT t.id, DATE(t.date) AS fecha, t.bank AS banco, t.amount AS monto,
+               t.type AS tipo, t.merchant AS comercio,
+               COALESCE(c.name, '') AS categoria_actual
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        {where}
+        ORDER BY t.date DESC
+        """,
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_or_create_category(conn: sqlite3.Connection, name: str) -> int:
+    """Retorna id de categoría existente o la crea si no existe (case-insensitive)."""
+    import json as _json
+    row = conn.execute(
+        "SELECT id FROM categories WHERE UPPER(name) = UPPER(?)", (name,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    conn.execute(
+        "INSERT INTO categories(name, keywords) VALUES(?, ?)",
+        (name, _json.dumps([])),
+    )
+    return conn.execute(
+        "SELECT id FROM categories WHERE UPPER(name) = UPPER(?)", (name,)
+    ).fetchone()["id"]

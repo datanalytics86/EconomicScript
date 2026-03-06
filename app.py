@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 from contextlib import contextmanager
 from datetime import date, timedelta
+from io import BytesIO
 
 import pandas as pd
 import plotly.express as px
@@ -14,7 +15,7 @@ import streamlit as st
 
 import config
 from categorizer import assign_category_and_learn, auto_categorize
-from db import Database
+from db import Database, get_or_create_category, get_transactions_for_export
 from gmail_ingest import GmailIngestor
 from statement_parser import StatementParser
 from utils import get_cycle_start_date
@@ -462,6 +463,132 @@ def _render_rules(conn: sqlite3.Connection) -> None:
             st.rerun()
 
 
+# ── Categorización masiva vía Excel ────────────────────────────────────────────
+
+def _render_bulk_categorization(conn: sqlite3.Connection) -> None:
+    """Exporta transacciones a Excel para categorizar en bulk e importar de vuelta."""
+    with st.expander("Categorización masiva (Excel)", expanded=False):
+        st.write(
+            "Descarga las transacciones en Excel, rellena la columna "
+            "**categoria_nueva** y vuelve a subir el archivo. "
+            "El sistema asignará la categoría y aprenderá la regla para ese comercio."
+        )
+
+        # ── Filtros ────────────────────────────────────────────────────────────
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        since = col_f1.date_input(
+            "Desde", value=date.today() - timedelta(days=90), key="bulk_since"
+        )
+        until = col_f2.date_input("Hasta", value=date.today(), key="bulk_until")
+        bank_opts = ["(todos)", "BCI", "BANCO_ESTADO", "SECURITY"]
+        bank_sel = col_f3.selectbox("Banco", bank_opts, key="bulk_bank")
+        uncategorized_only = col_f4.checkbox(
+            "Solo sin categorizar", value=True, key="bulk_uncategorized"
+        )
+
+        bank_filter = None if bank_sel == "(todos)" else bank_sel
+
+        # ── Exportar ───────────────────────────────────────────────────────────
+        rows = get_transactions_for_export(conn, since, until, bank_filter, uncategorized_only)
+        if rows:
+            df_exp = pd.DataFrame(rows)
+            df_exp["categoria_nueva"] = ""
+            buf = BytesIO()
+            df_exp.to_excel(buf, index=False, engine="openpyxl")
+            st.download_button(
+                label=f"Descargar Excel ({len(rows)} transacciones)",
+                data=buf.getvalue(),
+                file_name=f"transacciones_{since}_{until}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_excel",
+            )
+        else:
+            st.info("Sin transacciones con los filtros seleccionados.")
+
+        st.divider()
+
+        # ── Importar ───────────────────────────────────────────────────────────
+        st.write("**Importar Excel categorizado:**")
+        uploaded = st.file_uploader(
+            "Sube el Excel con la columna categoria_nueva rellena",
+            type=["xlsx"],
+            key="bulk_uploader",
+        )
+        if uploaded and st.button("Aplicar categorías", key="btn_import_excel"):
+            df_in = pd.read_excel(uploaded, engine="openpyxl")
+            to_process = df_in[
+                df_in["categoria_nueva"].notna()
+                & (df_in["categoria_nueva"].astype(str).str.strip() != "")
+            ]
+            ok, errors = 0, []
+            for _, row in to_process.iterrows():
+                try:
+                    cat_id = get_or_create_category(
+                        conn, str(row["categoria_nueva"]).strip()
+                    )
+                    assign_category_and_learn(
+                        conn, int(row["id"]), cat_id, str(row["comercio"])
+                    )
+                    ok += 1
+                except Exception as exc:
+                    errors.append(f"ID {row.get('id', '?')}: {exc}")
+            conn.commit()
+            n_auto = auto_categorize(conn)
+            conn.commit()
+            st.success(
+                f"{ok} transacciones categorizadas manualmente"
+                + (f" + {n_auto} adicionales por reglas aprendidas" if n_auto else "")
+            )
+            if errors:
+                st.warning("Errores:\n" + "\n".join(errors))
+            st.rerun()
+
+
+# ── Diagnóstico de correo diario ───────────────────────────────────────────────
+
+def _render_email_diagnostics() -> None:
+    """Muestra estado de configuración SMTP y permite enviar un test."""
+    with st.expander("Diagnóstico correo diario (SMTP)", expanded=False):
+        smtp_user = config.SMTP_USER or config.IMAP_USER
+        smtp_to = config.SMTP_TO
+        smtp_password = config.SMTP_PASSWORD
+
+        col1, col2 = st.columns(2)
+        col1.metric("Remitente", smtp_user or "No configurado")
+        col2.metric("Destinatario (SMTP_TO)", smtp_to or "No configurado")
+
+        if not smtp_password:
+            st.error(
+                "**SMTP_PASSWORD no está configurado en `.env`** — "
+                "esta es la causa de que no lleguen los correos automáticos.\n\n"
+                "**Pasos para solucionarlo:**\n"
+                "1. Ve a https://myaccount.google.com/apppasswords\n"
+                "2. Crea una App Password (categoría: Correo)\n"
+                "3. Agrega en tu `.env`:\n"
+                "   ```\n"
+                "   SMTP_PASSWORD=xxxx xxxx xxxx xxxx\n"
+                "   ```\n"
+                "4. Reinicia el dashboard y vuelve a probar aquí."
+            )
+            return
+
+        st.success("SMTP_PASSWORD configurado correctamente")
+
+        st.divider()
+        report_date_test = st.date_input(
+            "Fecha del reporte de prueba",
+            value=date.today() - timedelta(days=1),
+            key="test_email_date",
+        )
+        if st.button("Enviar reporte de prueba", key="btn_test_email"):
+            from daily_report import send_daily_report
+            try:
+                send_daily_report(report_date=report_date_test)
+                st.success(f"Reporte enviado a {smtp_to}")
+            except Exception as exc:
+                st.error(f"Error al enviar: {exc}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -480,8 +607,10 @@ def main() -> None:
         # Secciones siempre visibles (independiente de si hay transacciones)
         _render_gmail_ingest(conn)
         _render_cartola_upload()
+        _render_email_diagnostics()
         st.divider()
         _render_category_manager(conn)
+        _render_bulk_categorization(conn)
         st.divider()
 
         df = _load_transactions(conn)
