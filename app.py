@@ -68,7 +68,7 @@ def _render_sidebar(conn: sqlite3.Connection) -> None:
             "SELECT DISTINCT bank FROM transactions WHERE date >= DATE('now', '-30 days')"
         )
     }
-    for bank in ("BCI", "BANCO_ESTADO", "SECURITY"):
+    for bank in config.SUPPORTED_BANKS:
         icon = "✅" if bank in active_banks else "⚠️"
         st.sidebar.write(f"{icon} {bank}")
 
@@ -480,7 +480,7 @@ def _render_bulk_categorization(conn: sqlite3.Connection) -> None:
             "Desde", value=date.today() - timedelta(days=90), key="bulk_since"
         )
         until = col_f2.date_input("Hasta", value=date.today(), key="bulk_until")
-        bank_opts = ["(todos)", "BCI", "BANCO_ESTADO", "SECURITY"]
+        bank_opts = ["(todos)"] + config.SUPPORTED_BANKS
         bank_sel = col_f3.selectbox("Banco", bank_opts, key="bulk_bank")
         uncategorized_only = col_f4.checkbox(
             "Solo sin categorizar", value=True, key="bulk_uncategorized"

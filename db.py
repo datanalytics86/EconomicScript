@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -145,16 +146,13 @@ def get_transactions_for_export(
 
 def get_or_create_category(conn: sqlite3.Connection, name: str) -> int:
     """Retorna id de categoría existente o la crea si no existe (case-insensitive)."""
-    import json as _json
     row = conn.execute(
         "SELECT id FROM categories WHERE UPPER(name) = UPPER(?)", (name,)
     ).fetchone()
     if row:
         return row["id"]
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO categories(name, keywords) VALUES(?, ?)",
-        (name, _json.dumps([])),
+        (name, json.dumps([])),
     )
-    return conn.execute(
-        "SELECT id FROM categories WHERE UPPER(name) = UPPER(?)", (name,)
-    ).fetchone()["id"]
+    return cursor.lastrowid

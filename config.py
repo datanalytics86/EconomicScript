@@ -33,6 +33,9 @@ RECONCILIATION_DATE_TOLERANCE_DAYS: int = int(
     os.getenv("RECONCILIATION_DATE_TOLERANCE_DAYS", "1")
 )
 
+# ── Bancos soportados ─────────────────────────────────────────────────────────
+SUPPORTED_BANKS: list[str] = ["BCI", "BANCO_ESTADO", "SECURITY"]
+
 # ── Localización ──────────────────────────────────────────────────────────────
 TIMEZONE: str = "America/Santiago"
 
