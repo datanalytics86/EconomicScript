@@ -55,7 +55,7 @@ class Database:
         rows = [
             (
                 t.bank,
-                t.date.isoformat(),
+                t.date.strftime("%Y-%m-%d %H:%M:%S"),  # naive local (hora chilena, sin offset)
                 t.amount,
                 t.type,
                 t.merchant,

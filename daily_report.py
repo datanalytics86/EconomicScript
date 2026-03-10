@@ -20,7 +20,7 @@ def _format_clp(amount: int) -> str:
     return f"${abs(amount):,.0f}".replace(",", ".")
 
 
-def _build_html_report(report_date: date) -> str:
+def _build_html_report(report_date: date, partial: bool = False) -> str:
     """Genera el cuerpo HTML del reporte con transacciones del día y acumulado del ciclo."""
 
     cycle_start = get_cycle_start_date(report_date)
@@ -62,6 +62,11 @@ def _build_html_report(report_date: date) -> str:
 
     day_label = report_date.strftime("%d/%m/%Y")
     cycle_label = cycle_start.strftime("%d/%m/%Y")
+    h2_title = (
+        f"Resumen de hoy &mdash; {day_label} (hasta ahora)"
+        if partial
+        else f"Resumen financiero &mdash; {day_label}"
+    )
 
     if day_rows:
         day_rows_html = "\n".join(
@@ -103,7 +108,7 @@ def _build_html_report(report_date: date) -> str:
   </style>
 </head>
 <body>
-  <h2>Resumen financiero &mdash; {day_label}</h2>
+  <h2>{h2_title}</h2>
 
   <h3>Transacciones del {day_label}</h3>
   <table>
@@ -132,14 +137,15 @@ def _build_html_report(report_date: date) -> str:
 </html>"""
 
 
-def send_daily_report(report_date: date | None = None) -> None:
+def send_daily_report(report_date: date | None = None, partial: bool = False) -> None:
     """Genera y envía el reporte diario por email vía SMTP (Gmail TLS).
 
     Args:
         report_date: Fecha a reportar. Por defecto: ayer.
+        partial: True para ejecución vespertina (reporta el día en curso, aún incompleto).
     """
     if report_date is None:
-        report_date = date.today() - timedelta(days=1)
+        report_date = date.today() if partial else date.today() - timedelta(days=1)
 
     smtp_to = config.SMTP_TO
     if not smtp_to:
@@ -159,11 +165,12 @@ def send_daily_report(report_date: date | None = None) -> None:
         )
         return
 
-    html_body = _build_html_report(report_date)
+    html_body = _build_html_report(report_date, partial=partial)
     day_label = report_date.strftime("%d/%m/%Y")
+    subject_suffix = " (hoy - parcial)" if partial else ""
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[EconomicScript] Resumen {day_label}"
+    msg["Subject"] = f"[EconomicScript] Resumen {day_label}{subject_suffix}"
     msg["From"] = smtp_user
     msg["To"] = smtp_to
     msg.attach(MIMEText(html_body, "html", "utf-8"))

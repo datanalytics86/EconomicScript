@@ -13,6 +13,7 @@ Para instalar la tarea programada:
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sqlite3
 import sys
@@ -43,10 +44,21 @@ from gmail_ingest import GmailIngestor  # noqa: E402
 LOGGER = logging.getLogger(__name__)
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Orquestador diario EconomicScript")
+    p.add_argument(
+        "--today",
+        action="store_true",
+        help="Reporta el día actual (para ejecución vespertina de las 20:00).",
+    )
+    return p.parse_args()
+
+
 def run() -> None:
+    args = _parse_args()
     today = date.today()
-    yesterday = today - timedelta(days=1)
-    LOGGER.info("═══ Inicio ejecución diaria — reporte del %s ═══", yesterday.isoformat())
+    report_date = today if args.today else today - timedelta(days=1)
+    LOGGER.info("═══ Inicio ejecución — reporte del %s ═══", report_date.isoformat())
 
     # Inicializar BD (idempotente)
     db = Database(config.DB_PATH)
@@ -79,7 +91,7 @@ def run() -> None:
 
     # 3. Envío del reporte diario
     LOGGER.info("Paso 3/3 — Envío del reporte por email")
-    send_daily_report(report_date=yesterday)
+    send_daily_report(report_date=report_date, partial=args.today)
 
     LOGGER.info("═══ Ejecución diaria completada ═══")
 
