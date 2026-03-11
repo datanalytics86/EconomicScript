@@ -102,11 +102,13 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         for r in cycle_rows
     ) or '<tr><td colspan="2" class="empty">Sin gastos en el ciclo</td></tr>'
 
+    last10_map = {r['day']: r['total'] for r in last10_rows}
+    last10_days = [report_date - timedelta(days=i) for i in range(10)]
     last10_rows_html = "\n".join(
-        f"<tr><td>{r['day'][8:10]}/{r['day'][5:7]}/{r['day'][0:4]}</td>"
-        f"<td class='num'>{_format_clp(r['total'])}</td></tr>"
-        for r in last10_rows
-    ) or '<tr><td colspan="2" class="empty">Sin datos</td></tr>'
+        f"<tr><td>{d.strftime('%d/%m/%Y')}</td>"
+        f"<td class='num'>{_format_clp(last10_map.get(d.isoformat(), 0))}</td></tr>"
+        for d in last10_days
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="es">
