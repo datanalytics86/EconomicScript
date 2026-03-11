@@ -40,6 +40,7 @@ from categorizer import auto_categorize  # noqa: E402
 from daily_report import send_daily_report  # noqa: E402
 from db import Database  # noqa: E402
 from gmail_ingest import GmailIngestor  # noqa: E402
+from reconciler import Reconciler  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -88,6 +89,11 @@ def run() -> None:
         LOGGER.info("Transacciones auto-categorizadas: %d", n)
     finally:
         conn.close()
+
+    # 2.5 Reconciliación gmail vs cartola (idempotente)
+    LOGGER.info("Paso 2.5/3 — Reconciliación gmail vs cartola")
+    rec_summary = Reconciler(db).reconcile()
+    LOGGER.info("Reconciliación: %s", rec_summary)
 
     # 3. Envío del reporte diario
     LOGGER.info("Paso 3/3 — Envío del reporte por email")

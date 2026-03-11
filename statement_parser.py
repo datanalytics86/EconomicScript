@@ -226,6 +226,7 @@ class StatementParser:
 
     def _parse_cartola_table(self, pdf, bank: str, ref: str) -> list[TransactionRecord]:
         transactions: list[TransactionRecord] = []
+        seen: set[str] = set()
         skipped = 0
 
         for page in pdf.pages:
@@ -303,7 +304,9 @@ class StatementParser:
                         tx.content_hash = compute_content_hash(
                             tx.bank, tx.date.isoformat(), tx.amount, tx.merchant
                         )
-                        transactions.append(tx)
+                        if tx.content_hash not in seen:
+                            seen.add(tx.content_hash)
+                            transactions.append(tx)
                     except (ValueError, IndexError) as exc:
                         LOGGER.debug("Cartola fila ignorada %r: %s", desc[:40], exc)
                         skipped += 1

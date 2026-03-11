@@ -240,7 +240,7 @@ class GmailIngestor:
         text = re.sub(
             r"<(?:br\s*/?|/p|/div|/tr|/li|/h[1-6])[^>]*>",
             "\n",
-            html_body,
+            text,
             flags=re.IGNORECASE,
         )
         # Apertura de celda → espacio (separa label de valor en tablas)
