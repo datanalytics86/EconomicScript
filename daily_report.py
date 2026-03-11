@@ -31,12 +31,12 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         # Transacciones del día reportado (solo gastos y cargos, amount > 0)
         day_rows = conn.execute(
             """
-            SELECT t.bank, t.merchant, t.type, t.amount,
+            SELECT t.bank, t.merchant, t.type, t.amount, t.date,
                    COALESCE(c.name, 'Sin categoría') AS category
             FROM transactions t
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE DATE(t.date) = ? AND t.amount > 0
-            ORDER BY t.bank, category, t.merchant
+            ORDER BY t.date, t.bank, category
             """,
             (report_date.isoformat(),),
         ).fetchall()
@@ -71,6 +71,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     if day_rows:
         day_rows_html = "\n".join(
             f"<tr>"
+            f"<td>{r['date'][8:10]}/{r['date'][5:7]} {r['date'][11:16]}</td>"
             f"<td>{r['bank']}</td>"
             f"<td>{r['merchant']}</td>"
             f"<td>{r['type']}</td>"
@@ -81,7 +82,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         )
     else:
         day_rows_html = (
-            '<tr><td colspan="5" class="empty">Sin transacciones registradas</td></tr>'
+            '<tr><td colspan="6" class="empty">Sin transacciones registradas</td></tr>'
         )
 
     cycle_rows_html = "\n".join(
@@ -113,11 +114,11 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
   <h3>Transacciones del {day_label}</h3>
   <table>
     <tr>
-      <th>Banco</th><th>Comercio</th><th>Tipo</th><th>Categor&iacute;a</th><th>Monto</th>
+      <th>Fecha</th><th>Banco</th><th>Comercio</th><th>Tipo</th><th>Categor&iacute;a</th><th>Monto</th>
     </tr>
     {day_rows_html}
     <tr class="total-row">
-      <td colspan="4"><b>Total del d&iacute;a</b></td>
+      <td colspan="5"><b>Total del d&iacute;a</b></td>
       <td class="num"><b>{_format_clp(total_day)}</b></td>
     </tr>
   </table>
