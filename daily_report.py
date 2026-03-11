@@ -54,6 +54,18 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
             """,
             (cycle_start.isoformat(),),
         ).fetchall()
+
+        # Gasto diario de los últimos 10 días
+        last10_rows = conn.execute(
+            """
+            SELECT DATE(t.date) AS day, SUM(t.amount) AS total
+            FROM transactions t
+            WHERE DATE(t.date) > DATE(?, '-10 days') AND t.amount > 0
+            GROUP BY day
+            ORDER BY day DESC
+            """,
+            (report_date.isoformat(),),
+        ).fetchall()
     finally:
         conn.close()
 
@@ -89,6 +101,12 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         f"<tr><td>{r['category']}</td><td class='num'>{_format_clp(r['total'])}</td></tr>"
         for r in cycle_rows
     ) or '<tr><td colspan="2" class="empty">Sin gastos en el ciclo</td></tr>'
+
+    last10_rows_html = "\n".join(
+        f"<tr><td>{r['day'][8:10]}/{r['day'][5:7]}/{r['day'][0:4]}</td>"
+        f"<td class='num'>{_format_clp(r['total'])}</td></tr>"
+        for r in last10_rows
+    ) or '<tr><td colspan="2" class="empty">Sin datos</td></tr>'
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -131,6 +149,12 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
       <td><b>Total acumulado</b></td>
       <td class="num"><b>{_format_clp(total_cycle)}</b></td>
     </tr>
+  </table>
+
+  <h3>Gasto diario &mdash; &uacute;ltimos 10 d&iacute;as</h3>
+  <table>
+    <tr><th>D&iacute;a</th><th>Total gastado</th></tr>
+    {last10_rows_html}
   </table>
 
   <p class="footer">Generado autom&aacute;ticamente por EconomicScript &middot; {day_label}</p>
