@@ -64,7 +64,12 @@ class SecurityParser(BankParser):
     )
 
     def can_parse(self, sender: str, subject: str, body: str) -> bool:
-        return any(p in sender.lower() for p in self.sender_patterns)
+        if not any(p in sender.lower() for p in self.sender_patterns):
+            return False
+        # marketingbanco@security.cl envía emails promocionales, no notificaciones de transacción
+        if "marketingbanco@" in sender.lower():
+            return False
+        return True
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
         # 1. Compra TC

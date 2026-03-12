@@ -103,7 +103,11 @@ class BCIParser(BankParser):
             return False
         subject_l = subject.lower()
         # Alertas de seguridad/acceso sin transacción financiera → ignorar
-        if "no autorizada" in subject_l or "acceso a información" in subject_l:
+        _NON_TX_KEYWORDS = ("no autorizada", "acceso a información", "cambio de clave", "clave de internet")
+        if any(kw in subject_l for kw in _NON_TX_KEYWORDS):
+            return False
+        # Respuestas a hilos de soporte → no son notificaciones automáticas
+        if subject_l.startswith("re:"):
             return False
         body_l = body.lower()
         return (

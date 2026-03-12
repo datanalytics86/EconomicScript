@@ -39,12 +39,22 @@ class BancoEstadoParser(BankParser):
     )
 
     # Transferencia (saliente o entrante)
-    # Formato real: "Monto $X" y "Para NAME" en misma línea; fecha al final sin label
-    # Ej: "Monto $1.200.000 \n Para Nicolas Andrade \n ... \n 27/02/2026 12:06:28"
+    # Dos layouts reales:
+    #   Con espacios: "Monto $1.200.000 \n Para Nicolas Andrade \n ... 27/02/2026"
+    #   Sin espacios: "Monto$1.300,000\nParaNicolas Andrade\n...19/06/2023 14:25"
     _PATTERN_TRANSFER = re.compile(
-        r"Monto\s+\$?\s*(?P<amount>[\d\.]+).*?"
-        r"(?:Para|de\s+nuestro\(a\)\s+cliente)\s+(?P<merchant>[^\n\r]+).*?"
+        r"Monto\s*\$?\s*(?P<amount>[\d\.,]+).*?"
+        r"(?:Para|de\s+nuestro\(a\)\s+cliente)\s*(?P<merchant>[^\n\r]+).*?"
         r"(?:Fecha\s+y\s+hora\s*:?\s*)?(?P<date>\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    # Compra en moneda extranjera (CAD, USD, EUR, etc.) con layout multilinea
+    #   "compra por CAD\n137,43\n en\nPHARMAPRIX 42\n...el día\n20/06/2023"
+    _PATTERN_COMPRA_FX = re.compile(
+        r"compra\s+por\s+(?P<currency>[A-Z]{2,3})\s*\n\s*(?P<amount>[\d,\.]+).*?"
+        r"en\s*\n\s*(?P<merchant>[^\n]+).*?"
+        r"el\s+d[ií]a\s*\n?\s*(?P<date>\d{2}/\d{2}/\d{4})",
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -71,7 +81,23 @@ class BancoEstadoParser(BankParser):
         return any(p in sender.lower() for p in self.sender_patterns)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
-        # 1. Compra TC (notificación directa con monto en línea)
+        # 1. Compra TC en moneda extranjera (CAD/USD/EUR) — layout multilinea
+        m = self._PATTERN_COMPRA_FX.search(body)
+        if m:
+            currency = m.group("currency").upper()
+            raw_fx = m.group("amount").replace(",", ".")
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=round(float(raw_fx)),
+                type="Compra TC FX",
+                merchant=f"{currency} - {m.group('merchant').strip()}",
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 2. Compra TC CLP (notificación directa con monto en línea)
         m = self._PATTERN_COMPRA.search(body)
         if m:
             return TransactionRecord(

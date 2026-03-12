@@ -453,6 +453,69 @@ def test_security_rejects_other_sender() -> None:
     assert not SecurityParser().can_parse("noreply@gmail.com", "", "")
 
 
+def test_security_rejects_marketing_sender() -> None:
+    """marketingbanco@security.cl envía marketing, no transacciones."""
+    assert not SecurityParser().can_parse("marketingbanco@security.cl", "Paga tu patente", "")
+
+
+def test_bci_can_parse_rejects_cambio_clave() -> None:
+    assert not BCIParser().can_parse("contacto@bci.cl", "Notificación de Cambio de Clave de Internet", "")
+
+
+def test_bci_can_parse_rejects_reply() -> None:
+    assert not BCIParser().can_parse("asistencia.preferencial@bci.cl", "Re: Consulta prepago TC BCI", "")
+
+
+def test_bancoestado_transfer_sin_espacios() -> None:
+    """Transferencia BE con layout sin espacios: Monto$X y ParaNOMBRE (formato antiguo)."""
+    parser = BancoEstadoParser()
+    body = (
+        "Comprobante de transferencia realizada\n"
+        "BancoEstado\n"
+        "Estimado(a) Nicolas Ignacio Sebastian:\n"
+        "La transferencia se ha realizado con exito\n"
+        "Monto$1.300,000\n"
+        "ParaNicolas Andrade\n"
+        "RUT16.474.276-8\n"
+        "CuentaCuenta Corriente  46685197\n"
+        "BancoBANCO DE CREDITO E INVERSIONES\n"
+        "Fecha y hora19/06/2023 14:25\n"
+    )
+    tx = parser.parse(body, "msg-be-transfer-001")
+    assert tx.type == "Transferencia"
+    assert tx.amount == 1300000
+    assert "Nicolas Andrade" in tx.merchant
+    assert tx.date.day == 19
+    assert tx.date.month == 6
+    assert tx.date.year == 2023
+
+
+def test_bancoestado_compra_fx_cad() -> None:
+    """Compra BancoEstado en moneda extranjera (CAD): layout multilinea."""
+    parser = BancoEstadoParser()
+    body = (
+        "NICOLAS IGNACIO SEBASTIAN\n"
+        "ANDRADE\n"
+        "Se ha realizado una compra por CAD\n"
+        "137,43\n"
+        " en\n"
+        "PHARMAPRIX 42\n"
+        "asociado a su tarjeta de credito terminada en **** 0608\n"
+        " el día\n"
+        "20/06/2023\n"
+        " a las\n"
+        "13:45\n"
+        "hrs.\n"
+    )
+    tx = parser.parse(body, "msg-be-fx-001")
+    assert tx.type == "Compra TC FX"
+    assert tx.amount == 137
+    assert tx.merchant == "CAD - PHARMAPRIX 42"
+    assert tx.date.day == 20
+    assert tx.date.month == 6
+    assert tx.date.year == 2023
+
+
 # ─────────────────────────────────────────────
 # StatementParser — PDFs reales del dropzone
 # ─────────────────────────────────────────────
