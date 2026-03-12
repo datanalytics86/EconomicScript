@@ -34,12 +34,31 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Auto-transferencia entre cuentas propias (sin Nombre del destinatario)
+    # Realizaste una transferencia de fondos desde tu cuenta N° XXXX hacia tu cuenta N° YYYY
+    # Monto transferido $148.286 / Fecha de abono\nDD/MM/YYYY
+    _PATTERN_TRANSFER_SELF = re.compile(
+        r"transferencia de fondos.*?hacia tu cuenta N[°o]?\s*(?P<dest>\d+).*?"
+        r"Monto transferido\s*\$?(?P<amount>[\d\.]+).*?"
+        r"Fecha de abono\s*\n\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Transferencia entrante — layout campo-por-línea
     # Razón social:\nEMPRESA SPA\n...\nMonto transferido:\n$ 1,380,000\n...\nFecha:\nDD/MM/YYYY
     _PATTERN_TRANSFER_INCOMING = re.compile(
         r"Raz[oó]n\s+social\s*:?\s*\n\s*(?P<merchant>[^\n]+).*?"
         r"Monto\s+transferido\s*:?\s*\n?\s*\$?\s*(?P<amount>[\d\.,]+).*?"
         r"Fecha\s*:?\s*\n?\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    # Comprobante de pago de tarjeta de crédito
+    #   Monto pagado:\n$61,636\nTarjeta de crédito:\n****6326\nFecha:\n27/04/23
+    _PATTERN_PAGO_TC = re.compile(
+        r"Monto pagado\s*:?\s*\n\s*\$?(?P<amount>[\d\.,]+).*?"
+        r"Tarjeta de cr[eé]dito\s*:?\s*\n\s*(?P<card>[^\n]+).*?"
+        r"Fecha\s*:?\s*\n\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -83,6 +102,9 @@ class BCIParser(BankParser):
         if not any(p in sender.lower() for p in self.sender_patterns):
             return False
         subject_l = subject.lower()
+        # Alertas de seguridad/acceso sin transacción financiera → ignorar
+        if "no autorizada" in subject_l or "acceso a información" in subject_l:
+            return False
         body_l = body.lower()
         return (
             "notificación" in subject_l
@@ -94,6 +116,20 @@ class BCIParser(BankParser):
         )
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
+        # Auto-transferencia entre cuentas propias — tiene prioridad (no tiene "Nombre del destinatario")
+        match = self._PATTERN_TRANSFER_SELF.search(body)
+        if match:
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(match.group("date")),
+                amount=normalize_clp_amount(match.group("amount")),
+                type="Transferencia Propia",
+                merchant=f"Cuenta propia {match.group('dest')}",
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
         # Transferencia entrante (Razón social como remitente) — tiene prioridad sobre saliente
         match = self._PATTERN_TRANSFER_INCOMING.search(body)
         if match:
@@ -117,6 +153,20 @@ class BCIParser(BankParser):
                 amount=normalize_clp_amount(match.group("amount")),
                 type="Transferencia",
                 merchant=match.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # Pago de tarjeta de crédito (antes de los patrones TC para evitar falso positivo)
+        match = self._PATTERN_PAGO_TC.search(body)
+        if match:
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(match.group("date")),
+                amount=normalize_clp_amount(match.group("amount")),
+                type="Pago TC",
+                merchant=f"Pago TC {match.group('card').strip()}",
                 source="gmail",
                 raw_text=body,
                 gmail_message_id=gmail_message_id,

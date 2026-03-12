@@ -156,6 +156,70 @@ def test_bci_rejects_other_sender() -> None:
     assert not BCIParser().can_parse("noreply@gmail.com", "Aviso", "")
 
 
+def test_bci_can_parse_rejects_compra_no_autorizada() -> None:
+    assert not BCIParser().can_parse("contacto@bci.cl", "Notificación de compra no autorizada", "")
+
+
+def test_bci_can_parse_rejects_acceso_informacion() -> None:
+    assert not BCIParser().can_parse("contacto@bci.cl",
+        "Notificación de acceso a información de Tarjeta de Débito", "")
+
+
+def test_bci_transfer_self() -> None:
+    """Auto-transferencia entre cuentas propias: sin 'Nombre del destinatario'."""
+    parser = BCIParser()
+    body = (
+        "Hola\n"
+        "Nicolas Ignacio Sebastian Andrade Socias\n"
+        "Realizaste una transferencia de fondos desde tu cuenta N° 67940684\n"
+        "hacia tu cuenta N° 46685197\n"
+        "Datos de tu transferencia\n"
+        "Monto transferido $148.286\n"
+        "Cuenta de destino\n"
+        "46685197\n"
+        "Fecha de abono\n"
+        "17/05/2023\n"
+        "Mensaje\n"
+        "Número de comprobante\n"
+        "689586460\n"
+    )
+    tx = parser.parse(body, "msg-self-001")
+    assert tx.type == "Transferencia Propia"
+    assert tx.amount == 148286
+    assert tx.merchant == "Cuenta propia 46685197"
+    assert tx.date.day == 17
+    assert tx.date.month == 5
+    assert tx.date.year == 2023
+
+
+def test_bci_pago_tc() -> None:
+    """Comprobante pago tarjeta de crédito: 'Monto pagado:' y 'Tarjeta de crédito:'."""
+    parser = BCIParser()
+    body = (
+        "Hola\n"
+        "Nicolas Ignacio Sebastian Andrade Socias\n"
+        "Has realizado el siguiente pago de tu tarjeta de crédito nacional:\n"
+        "Detalle del pago\n"
+        "Monto pagado:\n"
+        "$61,636\n"
+        "Cuenta de origen:\n"
+        "46685197\n"
+        "Tarjeta de crédito:\n"
+        "****6326\n"
+        "Fecha:\n"
+        "27/04/23\n"
+        "Hora:\n"
+        "07:05\n"
+    )
+    tx = parser.parse(body, "msg-pago-001")
+    assert tx.type == "Pago TC"
+    assert tx.amount == 61636
+    assert tx.merchant == "Pago TC ****6326"
+    assert tx.date.day == 27
+    assert tx.date.month == 4
+    assert tx.date.year == 2023
+
+
 def test_bci_tc_fx_usd() -> None:
     """Compra TC en moneda extranjera (USD): layout moderno con monto USD XX,XX."""
     parser = BCIParser()
