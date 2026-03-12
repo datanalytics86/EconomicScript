@@ -6,9 +6,29 @@ from db import Database
 
 
 def main() -> None:
+    import sys
+    dump_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
+
     db = Database(config.DB_PATH)
     conn = db.connect()
     try:
+        # --- modo dump: muestra raw_text de un email específico ---
+        if dump_id is not None:
+            row = conn.execute(
+                "SELECT id, sender, subject, error_reason, raw_text "
+                "FROM unprocessed_emails WHERE id = ?",
+                (dump_id,),
+            ).fetchone()
+            if not row:
+                print(f"No existe unprocessed_emails.id={dump_id}")
+                return
+            print(f"id={row['id']} sender={row['sender']}")
+            print(f"subject : {row['subject']}")
+            print(f"error   : {row['error_reason']}")
+            print(f"--- raw_text ({len(row['raw_text'])} chars) ---")
+            print(row["raw_text"])
+            return
+
         # --- unprocessed_emails ---
         rows = conn.execute(
             "SELECT id, DATE(created_at) AS day, sender, subject, error_reason "
