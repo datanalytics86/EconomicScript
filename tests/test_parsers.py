@@ -156,6 +156,56 @@ def test_bci_rejects_other_sender() -> None:
     assert not BCIParser().can_parse("noreply@gmail.com", "Aviso", "")
 
 
+def test_bci_tc_fx_usd() -> None:
+    """Compra TC en moneda extranjera (USD): layout moderno con monto USD XX,XX."""
+    parser = BCIParser()
+    body = (
+        "Notificación uso TDC\n"
+        "Hola\n"
+        "NICOLAS IGNACIO SEBASTIAN ANDRADE SOCIAS\n"
+        "Realizaste una\n"
+        "compra en comercio internacional\n"
+        "con tu\n"
+        "tarjeta de crédito.\n"
+        "Número tarjeta crédito\n"
+        "****1022\n"
+        "Monto\n"
+        "USD 20,00\n"
+        "Fecha\n"
+        "15/06/2023\n"
+        "Hora\n"
+        "12:28 horas\n"
+        "Comercio\n"
+        "CHATGPT SUBSCRIPTION +14158799686 US\n"
+    )
+    tx = parser.parse(body, "msg-fx-001")
+    assert tx.type == "Compra TC FX"
+    assert tx.amount == 20
+    assert tx.merchant == "USD - CHATGPT SUBSCRIPTION +14158799686 US"
+    assert tx.date.day == 15
+    assert tx.date.month == 6
+    assert tx.date.year == 2023
+
+
+def test_bci_tc_fx_decimal() -> None:
+    """Compra TC FX con centavos: USD 37,20 → amount=37."""
+    parser = BCIParser()
+    body = (
+        "Monto\n"
+        "USD 37,20\n"
+        "Fecha\n"
+        "11/06/2023\n"
+        "Hora\n"
+        "22:08 horas\n"
+        "Comercio\n"
+        "BEAU SOIR MONTREAL CA\n"
+    )
+    tx = parser.parse(body, "msg-fx-002")
+    assert tx.type == "Compra TC FX"
+    assert tx.amount == 37
+    assert "BEAU SOIR MONTREAL CA" in tx.merchant
+
+
 # ─────────────────────────────────────────────
 # BancoEstado
 # ─────────────────────────────────────────────

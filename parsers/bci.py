@@ -43,7 +43,16 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
-    # Notificación de compra con tarjeta de crédito — tres layouts posibles:
+    # Notificación de compra con tarjeta de crédito — cuatro layouts posibles:
+
+    # Layout moneda extranjera (igual al moderno pero monto en USD/EUR/etc):
+    #   Monto\nUSD 20,00\nFecha\n15/06/2023\nHora\nHH:MM horas\nComercio\nNOMBRE
+    _PATTERN_TC_FX = re.compile(
+        r"Monto\s*\n\s*(?P<currency>[A-Z]{3})\s+(?P<amount>[\d,\.]+).*?"
+        r"Fecha\s*\n\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        r"Comercio\s*(?::?\s*|\n\s*)(?P<merchant>[^\n]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
 
     # Layout moderno (etiqueta sola en su línea, valor en la siguiente):
     #   Monto\n$12.199\nFecha\n04/03/2026\nHora\nHH:MM horas\nComercio\nNOMBRE
@@ -108,6 +117,22 @@ class BCIParser(BankParser):
                 amount=normalize_clp_amount(match.group("amount")),
                 type="Transferencia",
                 merchant=match.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # Compra en moneda extranjera (USD, EUR, etc.) — antes de los patrones CLP
+        match = self._PATTERN_TC_FX.search(body)
+        if match:
+            currency = match.group("currency").upper()
+            raw_fx = match.group("amount").replace(",", ".")
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(match.group("date")),
+                amount=round(float(raw_fx)),
+                type="Compra TC FX",
+                merchant=f"{currency} - {match.group('merchant').strip()}",
                 source="gmail",
                 raw_text=body,
                 gmail_message_id=gmail_message_id,
