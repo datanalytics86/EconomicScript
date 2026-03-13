@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Orquestador diario: ingesta Gmail → auto-categoriza → envía reporte por email.
 
-Diseñado para ejecutarse automáticamente via Windows Task Scheduler a las 06:55.
-El reporte cubre las transacciones del día anterior (ayer) y el acumulado del ciclo.
+Por defecto reporta el día actual (hoy). Para uso en Task Scheduler a las 06:55
+que reporta el día anterior, usar --yesterday.
 
 Uso manual:
-    python run_daily.py
+    python run_daily.py              # reporte de hoy
+    python run_daily.py --yesterday  # reporte de ayer (cron matutino)
 
 Para instalar la tarea programada:
     powershell -ExecutionPolicy Bypass -File setup_scheduler.ps1
@@ -48,9 +49,9 @@ LOGGER = logging.getLogger(__name__)
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Orquestador diario EconomicScript")
     p.add_argument(
-        "--today",
+        "--yesterday",
         action="store_true",
-        help="Reporta el día actual (para ejecución vespertina de las 20:00).",
+        help="Reporta el día anterior (para ejecución matutina programada de las 06:55).",
     )
     return p.parse_args()
 
@@ -58,7 +59,7 @@ def _parse_args() -> argparse.Namespace:
 def run() -> None:
     args = _parse_args()
     today = date.today()
-    report_date = today if args.today else today - timedelta(days=1)
+    report_date = today - timedelta(days=1) if args.yesterday else today
     LOGGER.info("═══ Inicio ejecución — reporte del %s ═══", report_date.isoformat())
 
     # Inicializar BD (idempotente)
@@ -97,7 +98,7 @@ def run() -> None:
 
     # 3. Envío del reporte diario
     LOGGER.info("Paso 3/3 — Envío del reporte por email")
-    send_daily_report(report_date=report_date, partial=args.today)
+    send_daily_report(report_date=report_date, partial=not args.yesterday)
 
     LOGGER.info("═══ Ejecución diaria completada ═══")
 

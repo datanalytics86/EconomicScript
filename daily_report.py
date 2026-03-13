@@ -28,20 +28,33 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     conn = sqlite3.connect(config.DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        # Transacciones del día reportado (solo gastos y cargos, amount > 0)
-        day_rows = conn.execute(
+        # Compras y débitos del día (excluye transferencias)
+        purchase_rows = conn.execute(
             """
             SELECT t.bank, t.merchant, t.type, t.amount, t.date,
                    COALESCE(c.name, 'Sin categoría') AS category
             FROM transactions t
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE DATE(t.date) = ? AND t.amount > 0
+              AND t.type NOT LIKE 'Transferencia%'
             ORDER BY t.date, t.bank, category
             """,
             (report_date.isoformat(),),
         ).fetchall()
 
-        # Acumulado del ciclo por categoría (solo gastos)
+        # Transferencias del día (informativo, no suma al total)
+        transfer_rows = conn.execute(
+            """
+            SELECT t.bank, t.merchant, t.type, t.amount, t.date
+            FROM transactions t
+            WHERE DATE(t.date) = ? AND t.amount > 0
+              AND t.type LIKE 'Transferencia%'
+            ORDER BY t.date, t.bank
+            """,
+            (report_date.isoformat(),),
+        ).fetchall()
+
+        # Acumulado del ciclo por categoría (solo compras/débitos, sin transferencias)
         cycle_rows = conn.execute(
             """
             SELECT COALESCE(c.name, 'Sin categoría') AS category,
@@ -49,18 +62,20 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
             FROM transactions t
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE DATE(t.date) >= ? AND t.amount > 0
+              AND t.type NOT LIKE 'Transferencia%'
             GROUP BY category
             ORDER BY total DESC
             """,
             (cycle_start.isoformat(),),
         ).fetchall()
 
-        # Gasto diario de los últimos 10 días
+        # Gasto diario de los últimos 10 días (solo compras/débitos)
         last10_rows = conn.execute(
             """
             SELECT DATE(t.date) AS day, SUM(t.amount) AS total
             FROM transactions t
             WHERE DATE(t.date) > DATE(?, '-10 days') AND t.amount > 0
+              AND t.type NOT LIKE 'Transferencia%'
             GROUP BY day
             ORDER BY day DESC
             """,
@@ -69,7 +84,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     finally:
         conn.close()
 
-    total_day = sum(r["amount"] for r in day_rows)
+    total_day = sum(r["amount"] for r in purchase_rows)
     total_cycle = sum(r["total"] for r in cycle_rows)
 
     day_label = report_date.strftime("%d/%m/%Y")
@@ -80,8 +95,8 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         else f"Resumen financiero &mdash; {day_label}"
     )
 
-    if day_rows:
-        day_rows_html = "\n".join(
+    if purchase_rows:
+        purchase_rows_html = "\n".join(
             f"<tr>"
             f"<td>{r['date'][8:10]}/{r['date'][5:7]} {r['date'][11:16]}</td>"
             f"<td>{r['bank']}</td>"
@@ -90,11 +105,27 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
             f"<td>{r['category']}</td>"
             f"<td class='num'>{_format_clp(r['amount'])}</td>"
             f"</tr>"
-            for r in day_rows
+            for r in purchase_rows
         )
     else:
-        day_rows_html = (
-            '<tr><td colspan="6" class="empty">Sin transacciones registradas</td></tr>'
+        purchase_rows_html = (
+            '<tr><td colspan="6" class="empty">Sin compras ni débitos registrados</td></tr>'
+        )
+
+    if transfer_rows:
+        transfer_rows_html = "\n".join(
+            f"<tr>"
+            f"<td>{r['date'][8:10]}/{r['date'][5:7]} {r['date'][11:16]}</td>"
+            f"<td>{r['bank']}</td>"
+            f"<td>{r['merchant']}</td>"
+            f"<td>{r['type']}</td>"
+            f"<td class='num'>{_format_clp(r['amount'])}</td>"
+            f"</tr>"
+            for r in transfer_rows
+        )
+    else:
+        transfer_rows_html = (
+            '<tr><td colspan="5" class="empty">Sin transferencias</td></tr>'
         )
 
     cycle_rows_html = "\n".join(
@@ -131,16 +162,24 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 <body>
   <h2>{h2_title}</h2>
 
-  <h3>Transacciones del {day_label}</h3>
+  <h3>Compras y d&eacute;bitos del {day_label}</h3>
   <table>
     <tr>
       <th>Fecha</th><th>Banco</th><th>Comercio</th><th>Tipo</th><th>Categor&iacute;a</th><th>Monto</th>
     </tr>
-    {day_rows_html}
+    {purchase_rows_html}
     <tr class="total-row">
-      <td colspan="5"><b>Total del d&iacute;a</b></td>
+      <td colspan="5"><b>Total compras</b></td>
       <td class="num"><b>{_format_clp(total_day)}</b></td>
     </tr>
+  </table>
+
+  <h3>Transferencias del {day_label}</h3>
+  <table>
+    <tr>
+      <th>Fecha</th><th>Banco</th><th>Destino / Origen</th><th>Tipo</th><th>Monto</th>
+    </tr>
+    {transfer_rows_html}
   </table>
 
   <h3>Acumulado del ciclo (desde {cycle_label})</h3>
