@@ -1,0 +1,93 @@
+# Alertas automáticas en la nube — NO requiere PC encendido.
+# Horarios Chile: 07:00, 14:00 y 21:00 (America/Santiago, respeta DST).
+#
+# SECRETS requeridos en GitHub → Settings → Secrets → Actions:
+#   IMAP_USER, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REFRESH_TOKEN
+#   SMTP_TO, SMTP_PASSWORD
+#   SMTP_USER (opcional, por defecto usa IMAP_USER)
+#
+# Primera vez: ejecutar workflow "Seed Database" para subir tu finance.db local.
+
+name: Scheduled Alerts
+
+on:
+  schedule:
+    # Cada hora en :05 — el script solo actúa a las 7, 14 y 21 hrs Chile
+    - cron: "5 * * * *"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Forzar horario (morning=7am, afternoon=2pm, evening=9pm)"
+        required: true
+        default: afternoon
+        type: choice
+        options:
+          - morning
+          - afternoon
+          - evening
+
+concurrency:
+  group: economicscript-alerts
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Restaurar base de datos (cache)
+        uses: actions/cache@v4
+        id: db-cache
+        with:
+          path: finance.db
+          key: economicscript-db-v2
+          restore-keys: |
+            economicscript-db-v2
+
+      - name: Descargar BD desde release (primera vez)
+        if: steps.db-cache.outputs.cache-hit != 'true'
+        run: |
+          gh release list --repo "${{ github.repository }}" --limit 20 \
+            --json tagName --jq '.[].tagName' | grep '^db-seed-' | head -1 | \
+            xargs -I{} gh release download {} --repo "${{ github.repository }}" \
+            --pattern "finance.db" --clobber || echo "Sin release seed — BD nueva"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Inicializar BD si no existe
+        run: python -c "from db import Database; import config; d=Database(config.DB_PATH); d.init_schema(config.SCHEMA_PATH); print('DB lista')"
+
+      - name: Ejecutar alerta programada
+        env:
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          DB_PATH: finance.db
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python run_cloud.py --force-slot "${{ inputs.slot }}" --skip-hour-check
+          else
+            python run_cloud.py
+          fi
+
+      - name: Guardar base de datos (cache)
+        uses: actions/cache/save@v4
+        if: always() && hashFiles('finance.db') != ''
+        with:
+          path: finance.db
+          key: economicscript-db-v2

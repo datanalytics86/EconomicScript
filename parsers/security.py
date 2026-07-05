@@ -54,6 +54,13 @@ class SecurityParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Cargo en moneda extranjera: "giraste MXN179,00 desde tu tarjeta ***7233"
+    _PATTERN_FX_DEBIT = re.compile(
+        r"El\s+(?P<date>\d{2}/\d{2}/\d{4})\s+a\s+las\s+\d+:\d+\s+"
+        r"giraste\s+(?P<currency>[A-Z]{3})(?P<amount>[\d,\.]+)\s+desde\s+tu\s+tarjeta",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Fallback legado: etiqueta:\nvalor (formato anterior)
     _PATTERN_LEGACY = re.compile(
         r"(?:Movimiento|Tipo):\s*(?P<type>.+?)\s*[\n\r]"
@@ -69,7 +76,21 @@ class SecurityParser(BankParser):
         # marketingbanco@security.cl envía emails promocionales, no notificaciones de transacción
         if "marketingbanco@" in sender.lower():
             return False
-        return True
+        subject_l = subject.lower()
+        body_l = body.lower()
+        promo_keywords = ("beneficio", "descuento", "promocion", "promoción", "cuotas sin interés", "patente")
+        if any(kw in subject_l for kw in promo_keywords):
+            return False
+        tx_keywords = (
+            "compra",
+            "transferencia",
+            "giraste",
+            "realizaste",
+            "recibiste",
+            "monto",
+            "cargo",
+        )
+        return any(kw in body_l for kw in tx_keywords)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
         # 1. Compra TC
@@ -116,7 +137,23 @@ class SecurityParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # 4. Formato legado (etiqueta: valor)
+        # 4. Cargo en moneda extranjera (MXN, USD, etc.)
+        m = self._PATTERN_FX_DEBIT.search(body)
+        if m:
+            currency = m.group("currency").upper()
+            raw_fx = m.group("amount").replace(",", ".")
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=round(float(raw_fx)),
+                type="Compra TC FX",
+                merchant=f"{currency} - Tarjeta Security",
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 5. Formato legado (etiqueta: valor)
         m = self._PATTERN_LEGACY.search(body)
         if m:
             return TransactionRecord(

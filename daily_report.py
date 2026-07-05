@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import config
+from report_utils import build_category_groups_html, fetch_transactions_grouped, get_connection
 from utils import get_cycle_start_date
 
 LOGGER = logging.getLogger(__name__)
@@ -25,49 +26,28 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 
     cycle_start = get_cycle_start_date(report_date)
 
-    conn = sqlite3.connect(config.DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_connection()
     try:
-        # Compras y débitos del día (excluye transferencias)
-        purchase_rows = conn.execute(
-            """
-            SELECT t.bank, t.merchant, t.type, t.amount, t.date,
-                   COALESCE(c.name, 'Sin categoría') AS category
-            FROM transactions t
-            LEFT JOIN categories c ON c.id = t.category_id
-            WHERE DATE(t.date) = ? AND t.amount > 0
-              AND t.type NOT LIKE 'Transferencia%'
-            ORDER BY t.date, t.bank, category
-            """,
-            (report_date.isoformat(),),
-        ).fetchall()
+        day_groups = fetch_transactions_grouped(
+            conn, since=report_date, until=report_date, expenses_only=True
+        )
+        cycle_groups = fetch_transactions_grouped(
+            conn, since=cycle_start, until=report_date, expenses_only=True
+        )
 
-        # Transferencias del día (informativo, no suma al total)
-        transfer_rows = conn.execute(
-            """
-            SELECT t.bank, t.merchant, t.type, t.amount, t.date
-            FROM transactions t
-            WHERE DATE(t.date) = ? AND t.amount > 0
-              AND t.type LIKE 'Transferencia%'
-            ORDER BY t.date, t.bank
-            """,
-            (report_date.isoformat(),),
-        ).fetchall()
+        day_rows = [r for g in day_groups for r in g.transactions]
+        cycle_rows = [{"category": g.category, "total": g.total} for g in cycle_groups]
 
-        # Acumulado del ciclo por categoría (solo compras/débitos, sin transferencias)
-        cycle_rows = conn.execute(
-            """
-            SELECT COALESCE(c.name, 'Sin categoría') AS category,
-                   SUM(t.amount) AS total
-            FROM transactions t
-            LEFT JOIN categories c ON c.id = t.category_id
-            WHERE DATE(t.date) >= ? AND t.amount > 0
-              AND t.type NOT LIKE 'Transferencia%'
-            GROUP BY category
-            ORDER BY total DESC
-            """,
-            (cycle_start.isoformat(),),
-        ).fetchall()
+        day_by_category_html = build_category_groups_html(
+            day_groups,
+            title=f"Gastos del {report_date.strftime('%d/%m/%Y')} por categor\u00eda",
+            empty_message="Sin transacciones registradas",
+        )
+        cycle_by_category_html = build_category_groups_html(
+            cycle_groups,
+            title=f"Gastos del ciclo (desde {cycle_start.strftime('%d/%m/%Y')}) por categor\u00eda",
+            empty_message="Sin gastos en el ciclo",
+        )
 
         # Gasto diario de los últimos 10 días (solo compras/débitos)
         last10_rows = conn.execute(
@@ -84,7 +64,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     finally:
         conn.close()
 
-    total_day = sum(r["amount"] for r in purchase_rows)
+    total_day = sum(r["amount"] for r in day_rows)
     total_cycle = sum(r["total"] for r in cycle_rows)
 
     day_label = report_date.strftime("%d/%m/%Y")
@@ -95,43 +75,6 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         else f"Resumen financiero &mdash; {day_label}"
     )
 
-    if purchase_rows:
-        purchase_rows_html = "\n".join(
-            f"<tr>"
-            f"<td>{r['date'][8:10]}/{r['date'][5:7]} {r['date'][11:16]}</td>"
-            f"<td>{r['bank']}</td>"
-            f"<td>{r['merchant']}</td>"
-            f"<td>{r['type']}</td>"
-            f"<td>{r['category']}</td>"
-            f"<td class='num'>{_format_clp(r['amount'])}</td>"
-            f"</tr>"
-            for r in purchase_rows
-        )
-    else:
-        purchase_rows_html = (
-            '<tr><td colspan="6" class="empty">Sin compras ni débitos registrados</td></tr>'
-        )
-
-    if transfer_rows:
-        transfer_rows_html = "\n".join(
-            f"<tr>"
-            f"<td>{r['date'][8:10]}/{r['date'][5:7]} {r['date'][11:16]}</td>"
-            f"<td>{r['bank']}</td>"
-            f"<td>{r['merchant']}</td>"
-            f"<td>{r['type']}</td>"
-            f"<td class='num'>{_format_clp(r['amount'])}</td>"
-            f"</tr>"
-            for r in transfer_rows
-        )
-    else:
-        transfer_rows_html = (
-            '<tr><td colspan="5" class="empty">Sin transferencias</td></tr>'
-        )
-
-    cycle_rows_html = "\n".join(
-        f"<tr><td>{r['category']}</td><td class='num'>{_format_clp(r['total'])}</td></tr>"
-        for r in cycle_rows
-    ) or '<tr><td colspan="2" class="empty">Sin gastos en el ciclo</td></tr>'
 
     last10_map = {r['day']: r['total'] for r in last10_rows}
     last10_days = [report_date - timedelta(days=i) for i in range(10)]
@@ -157,40 +100,29 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     .total-row td {{ font-weight: bold; background: #eaf2fb; }}
     .empty {{ text-align: center; color: #888; font-style: italic; }}
     .footer {{ margin-top: 32px; color: #aaa; font-size: 11px; }}
+    .cat-block {{ margin: 20px 0 28px; padding: 12px; background: #f8fbff;
+                  border-left: 4px solid #2874a6; border-radius: 4px; }}
+    .cat-block h4 {{ margin: 0 0 10px; color: #1a5276; }}
+    .summary-table {{ margin-bottom: 24px; }}
+    .subtotal-row td {{ background: #f4f8fc; font-size: 0.95em; }}
   </style>
 </head>
 <body>
   <h2>{h2_title}</h2>
 
-  <h3>Compras y d&eacute;bitos del {day_label}</h3>
-  <table>
-    <tr>
-      <th>Fecha</th><th>Banco</th><th>Comercio</th><th>Tipo</th><th>Categor&iacute;a</th><th>Monto</th>
-    </tr>
-    {purchase_rows_html}
-    <tr class="total-row">
-      <td colspan="5"><b>Total compras</b></td>
-      <td class="num"><b>{_format_clp(total_day)}</b></td>
-    </tr>
-  </table>
+  {day_by_category_html}
 
-  <h3>Transferencias del {day_label}</h3>
-  <table>
-    <tr>
-      <th>Fecha</th><th>Banco</th><th>Destino / Origen</th><th>Tipo</th><th>Monto</th>
-    </tr>
-    {transfer_rows_html}
-  </table>
+  <p class="total-row" style="padding:10px 12px;background:#eaf2fb;border-radius:4px;">
+    <b>Total del d&iacute;a: {_format_clp(total_day)}</b>
+  </p>
 
-  <h3>Acumulado del ciclo (desde {cycle_label})</h3>
-  <table>
-    <tr><th>Categor&iacute;a</th><th>Monto</th></tr>
-    {cycle_rows_html}
-    <tr class="total-row">
-      <td><b>Total acumulado</b></td>
-      <td class="num"><b>{_format_clp(total_cycle)}</b></td>
-    </tr>
-  </table>
+  <hr style="margin:32px 0;border:none;border-top:2px solid #e0e0e0;">
+
+  {cycle_by_category_html}
+
+  <p class="total-row" style="padding:10px 12px;background:#eaf2fb;border-radius:4px;">
+    <b>Total acumulado del ciclo (desde {cycle_label}): {_format_clp(total_cycle)}</b>
+  </p>
 
   <h3>Gasto diario &mdash; &uacute;ltimos 10 d&iacute;as</h3>
   <table>
@@ -203,7 +135,11 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 </html>"""
 
 
-def send_daily_report(report_date: date | None = None, partial: bool = False) -> None:
+def send_daily_report(
+    report_date: date | None = None,
+    partial: bool = False,
+    slot_label: str | None = None,
+) -> None:
     """Genera y envía el reporte diario por email vía SMTP (Gmail TLS).
 
     Args:
@@ -233,7 +169,12 @@ def send_daily_report(report_date: date | None = None, partial: bool = False) ->
 
     html_body = _build_html_report(report_date, partial=partial)
     day_label = report_date.strftime("%d/%m/%Y")
-    subject_suffix = " (hoy - parcial)" if partial else ""
+    if slot_label:
+        subject_suffix = f" — {slot_label}"
+    elif partial:
+        subject_suffix = " (hoy - parcial)"
+    else:
+        subject_suffix = ""
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[EconomicScript] Resumen {day_label}{subject_suffix}"

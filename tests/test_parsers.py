@@ -355,10 +355,11 @@ def test_bancoestado_legacy_format() -> None:
 
 
 def test_bancoestado_can_parse_real_sender() -> None:
-    """Acepta remitentes reales de BancoEstado."""
+    """Acepta remitentes reales de BancoEstado con contenido transaccional."""
     parser = BancoEstadoParser()
-    assert parser.can_parse("notificaciones@correo.bancoestado.cl", "", "")
-    assert parser.can_parse("noreply@correo.bancoestado.cl", "", "")
+    body = "Se ha realizado una compra por $ 2.990 en MERPAGO el día 27/02/2026"
+    assert parser.can_parse("notificaciones@correo.bancoestado.cl", "Notificación de compra", body)
+    assert parser.can_parse("noreply@correo.bancoestado.cl", "Transferencia", "Monto $1.200.000")
 
 
 def test_bancoestado_rejects_other_sender() -> None:
@@ -441,12 +442,28 @@ def test_security_legacy_format() -> None:
     assert tx.amount == 55000
 
 
+def test_security_fx_debit_real() -> None:
+    """Cargo en moneda extranjera: giraste MXN179,00 desde tu tarjeta."""
+    parser = SecurityParser()
+    body = (
+        "Estimado(a) NICOLAS IGNACIO S. ANDRADE SOCIAS,\n"
+        "El 26/03/2026 a las 19:22 giraste MXN179,00 desde tu tarjeta ***7233.\n"
+    )
+    tx = parser.parse(body, "sec_fx_1")
+    assert tx.bank == "SECURITY"
+    assert tx.amount == 179
+    assert tx.type == "Compra TC FX"
+    assert "MXN" in tx.merchant
+
+
 def test_security_can_parse_purchase_sender() -> None:
-    assert SecurityParser().can_parse("notificaciones@security.cl", "", "")
+    body = "El 03/03/2026 realizaste una compra en TIENDA de $2.990"
+    assert SecurityParser().can_parse("notificaciones@security.cl", "Notificaciones", body)
 
 
 def test_security_can_parse_transfer_sender() -> None:
-    assert SecurityParser().can_parse("noresponder@bancosecurity.cl", "", "")
+    body = "Monto:\n$ 2.500.000\nFecha y hora:\n02/03/2026 16:00 hrs.\nNombre:\nNicolas Andrade"
+    assert SecurityParser().can_parse("noresponder@bancosecurity.cl", "Transferencia", body)
 
 
 def test_security_rejects_other_sender() -> None:

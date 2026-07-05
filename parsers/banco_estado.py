@@ -78,7 +78,21 @@ class BancoEstadoParser(BankParser):
     )
 
     def can_parse(self, sender: str, subject: str, body: str) -> bool:
-        return any(p in sender.lower() for p in self.sender_patterns)
+        if not any(p in sender.lower() for p in self.sender_patterns):
+            return False
+        text = f"{subject} {body}".lower()
+        tx_keywords = (
+            "compra",
+            "transferencia",
+            "monto",
+            "pago de producto",
+            "pago",
+            "cargo",
+            "abono",
+            "recibiste",
+            "realizaste",
+        )
+        return any(kw in text for kw in tx_keywords)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
         # 1. Compra TC en moneda extranjera (CAD/USD/EUR) — layout multilinea

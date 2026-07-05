@@ -118,6 +118,105 @@ def _render_kpis(df: pd.DataFrame) -> None:
     )
 
 
+# ── Gastos por categoría (vista principal) ─────────────────────────────────────
+
+def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
+    """Muestra todas las transacciones agrupadas por categoría."""
+    from report_utils import UNCATEGORIZED_LABEL
+
+    st.subheader("Gastos por categoría")
+    st.caption("Todas tus transacciones agrupadas para ver en qué se va el dinero.")
+
+    gastos = df[df["amount"] > 0].copy()
+    if gastos.empty:
+        st.info("Sin gastos registrados.")
+        return
+
+    gastos["category_name"] = gastos["category_name"].fillna(UNCATEGORIZED_LABEL)
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    today = pd.Timestamp.now(tz=config.TIMEZONE).date()
+    cycle_start = get_cycle_start_date(today)
+
+    presets = {
+        "Hoy": (today, today),
+        "Ciclo actual": (cycle_start, today),
+        "Últimos 30 días": (today - timedelta(days=30), today),
+        "Últimos 90 días": (today - timedelta(days=90), today),
+        "Todo el historial": (None, None),
+    }
+    preset = col_f1.selectbox("Período", list(presets.keys()), index=1)
+    since, until = presets[preset]
+
+    if since:
+        gastos = gastos[gastos["date"].dt.date >= since]
+    if until:
+        gastos = gastos[gastos["date"].dt.date <= until]
+
+    bank_filter = col_f2.selectbox(
+        "Banco", ["Todos"] + config.SUPPORTED_BANKS, key="cat_bank_filter"
+    )
+    if bank_filter != "Todos":
+        gastos = gastos[gastos["bank"] == bank_filter]
+
+    show_all = col_f3.checkbox("Incluir transferencias y pagos TC", value=True)
+
+    if not show_all:
+        exclude_types = {"Transferencia", "Transferencia Propia", "Pago TC", "Pago Producto"}
+        gastos = gastos[~gastos["type"].isin(exclude_types)]
+
+    if gastos.empty:
+        st.info("Sin transacciones con los filtros seleccionados.")
+        return
+
+    summary = (
+        gastos.groupby("category_name", dropna=False)
+        .agg(movimientos=("amount", "count"), total=("amount", "sum"))
+        .reset_index()
+        .sort_values("total", ascending=False)
+    )
+    summary["%"] = (summary["total"] / summary["total"].sum() * 100).round(1)
+    summary["total_fmt"] = summary["total"].apply(
+        lambda x: f"${x:,.0f}".replace(",", ".")
+    )
+
+    total_general = gastos["amount"].sum()
+    st.metric(
+        "Total del período",
+        f"${total_general:,.0f}".replace(",", "."),
+        f"{len(gastos)} movimientos en {len(summary)} categorías",
+    )
+
+    st.dataframe(
+        summary.rename(columns={"category_name": "Categoría"})[
+            ["Categoría", "movimientos", "total_fmt", "%"]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
+
+    for _, cat_row in summary.iterrows():
+        cat_name = cat_row["category_name"]
+        cat_df = gastos[gastos["category_name"] == cat_name].copy()
+        cat_df = cat_df.sort_values("date", ascending=False)
+        label = (
+            f"{cat_name} — ${cat_row['total']:,.0f}".replace(",", ".")
+            + f" ({int(cat_row['movimientos'])} mov.)"
+        )
+        with st.expander(label, expanded=cat_name == summary.iloc[0]["category_name"]):
+            display = cat_df[
+                ["date", "bank", "merchant", "type", "amount"]
+            ].copy()
+            display["date"] = display["date"].dt.strftime("%d/%m/%Y %H:%M")
+            display["amount"] = display["amount"].apply(
+                lambda x: f"${x:,.0f}".replace(",", ".")
+            )
+            display.columns = ["Fecha", "Banco", "Comercio", "Tipo", "Monto"]
+            st.dataframe(display, use_container_width=True, hide_index=True)
+
+
 # ── Gráficos ───────────────────────────────────────────────────────────────────
 
 def _render_charts(df: pd.DataFrame) -> None:
@@ -125,12 +224,9 @@ def _render_charts(df: pd.DataFrame) -> None:
 
     with col1:
         st.subheader("Gasto por categoría")
-        cat_df = (
-            df[(df["category_name"].notna()) & (df["amount"] > 0)]
-            .groupby("category_name")["amount"]
-            .sum()
-            .reset_index()
-        )
+        plot_df = df[df["amount"] > 0].copy()
+        plot_df["category_name"] = plot_df["category_name"].fillna("Sin categoría")
+        cat_df = plot_df.groupby("category_name")["amount"].sum().reset_index()
         if cat_df.empty:
             st.info("Sin transacciones categorizadas aún")
         else:
@@ -624,7 +720,18 @@ def main() -> None:
 
         df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce").dt.tz_convert(config.TIMEZONE)
 
+        # Auto-categorizar al abrir el dashboard
+        with conn:
+            n = auto_categorize(conn)
+        if n:
+            df = _load_transactions(conn)
+            df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce").dt.tz_convert(
+                config.TIMEZONE
+            )
+
         _render_kpis(df)
+        st.divider()
+        _render_spending_by_category(conn, df)
         st.divider()
         _render_charts(df)
         st.divider()

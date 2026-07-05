@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    Registra las tareas diarias de EconomicScript en el Programador de tareas de Windows.
+    Registra las tareas automáticas de EconomicScript en el Programador de Windows.
 
 .DESCRIPTION
-    Crea dos tareas programadas:
-    - "EconomicScript-Daily"  : 07:00 hrs, reporta las transacciones del día anterior (completo).
-    - "EconomicScript-Evening": 20:00 hrs, reporta las transacciones del día actual hasta ese momento.
+    Crea tres tareas:
+    - EconomicScript-Poll    : cada 10 min, revisa Gmail y alerta al instante
+    - EconomicScript-Daily   : 07:00, reporte completo del día anterior
+    - EconomicScript-Evening : 20:00, resumen parcial del día actual
 
 .NOTES
-    - Ejecutar con privilegios de Administrador (clic derecho → "Ejecutar como administrador").
-    - Python debe estar instalado y accesible como 'python' en el PATH.
-    - Antes de ejecutar este script, configura tu archivo .env con SMTP_TO y las
-      credenciales de Gmail (ver .env.example).
+    Ejecutar como Administrador:
+    powershell -ExecutionPolicy Bypass -File setup_scheduler.ps1
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File setup_scheduler.ps1
@@ -19,89 +18,105 @@
 
 $ErrorActionPreference = "Stop"
 
-$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RunScript  = Join-Path $ScriptDir "run_daily.py"
-$TaskName        = "EconomicScript-Daily"
-$TaskNameEvening = "EconomicScript-Evening"
-$RunHour         = "07:00"
-$RunHourEvening  = "20:00"
+$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RunWrapper  = Join-Path $ScriptDir "run_task.ps1"
+$PollMinutes = 10
 
-# ── Verificaciones previas ─────────────────────────────────────────────────────
-$PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $PythonExe) {
-    Write-Error "Python no encontrado en PATH. Instala Python 3.10+ y vuelve a ejecutar."
-    exit 1
-}
+$Tasks = @(
+    @{
+        Name        = "EconomicScript-Poll"
+        Arguments   = "run_poll.py"
+        Description = "Revisa Gmail cada 10 min y envia alerta instantanea por transaccion nueva."
+        Schedule    = "Poll"
+    },
+    @{
+        Name        = "EconomicScript-Daily"
+        Arguments   = "run_daily.py"
+        Description = "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior."
+        Schedule    = "Daily07"
+    },
+    @{
+        Name        = "EconomicScript-Evening"
+        Arguments   = "run_daily.py --today"
+        Description = "Envia resumen parcial de gastos del dia actual a las 20:00."
+        Schedule    = "Daily20"
+    }
+)
 
-if (-not (Test-Path $RunScript)) {
-    Write-Error "No se encontró run_daily.py en: $RunScript"
+if (-not (Test-Path $RunWrapper)) {
+    Write-Error "No se encontró run_task.ps1 en: $RunWrapper"
     exit 1
 }
 
 $EnvFile = Join-Path $ScriptDir ".env"
 if (-not (Test-Path $EnvFile)) {
-    Write-Warning ".env no encontrado. Copia .env.example a .env y configura tus credenciales antes de que la tarea se ejecute."
+    Write-Warning ".env no encontrado. Configura credenciales antes de que las tareas se ejecuten."
 }
-
-# ── Registro de la tarea ───────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "Configurando tareas programadas de EconomicScript..."
-Write-Host "  Python    : $PythonExe"
-Write-Host "  Script    : $RunScript"
-Write-Host "  Directorio: $ScriptDir"
-Write-Host ""
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit    (New-TimeSpan -Hours 1) `
     -StartWhenAvailable `
     -RunOnlyIfNetworkAvailable `
-    -MultipleInstances     IgnoreNew
-
-# ── Tarea matutina (07:00) — reporte del día anterior ─────────────────────────
-Write-Host "  Registrando '$TaskName' a las $RunHour hrs (reporte de ayer)..."
-
-$Action = New-ScheduledTaskAction `
-    -Execute          $PythonExe `
-    -Argument         "`"$RunScript`"" `
-    -WorkingDirectory $ScriptDir
-
-$Trigger = New-ScheduledTaskTrigger -Daily -At $RunHour
-
-Register-ScheduledTask `
-    -TaskName    $TaskName `
-    -Action      $Action `
-    -Trigger     $Trigger `
-    -Settings    $Settings `
-    -Description "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior." `
-    -Force | Out-Null
-
-Write-Host "  OK  '$TaskName' registrada." -ForegroundColor Green
-
-# ── Tarea vespertina (20:00) — resumen parcial del día actual ─────────────────
-Write-Host "  Registrando '$TaskNameEvening' a las $RunHourEvening hrs (resumen de hoy)..."
-
-$ActionEvening = New-ScheduledTaskAction `
-    -Execute          $PythonExe `
-    -Argument         "`"$RunScript`" --today" `
-    -WorkingDirectory $ScriptDir
-
-$TriggerEvening = New-ScheduledTaskTrigger -Daily -At $RunHourEvening
-
-Register-ScheduledTask `
-    -TaskName    $TaskNameEvening `
-    -Action      $ActionEvening `
-    -Trigger     $TriggerEvening `
-    -Settings    $Settings `
-    -Description "Envia resumen parcial de gastos del dia actual a las 20:00 hrs." `
-    -Force | Out-Null
-
-Write-Host "  OK  '$TaskNameEvening' registrada." -ForegroundColor Green
+    -MultipleInstances     IgnoreNew `
+    -RestartCount          3 `
+    -RestartInterval       (New-TimeSpan -Minutes 5)
 
 Write-Host ""
+Write-Host "Configurando EconomicScript en: $ScriptDir"
+Write-Host ""
+
+$PollCmd   = Join-Path $ScriptDir "poll.cmd"
+$DailyCmd  = Join-Path $ScriptDir "daily.cmd"
+
+foreach ($task in $Tasks) {
+    if ($task.Schedule -eq "Poll") {
+        $tr = "`"$PollCmd`""
+        schtasks.exe /Create /TN $task.Name /TR $tr /SC MINUTE /MO $PollMinutes /F | Out-Null
+        Write-Host "  OK  $($task.Name) (cada $PollMinutes min)" -ForegroundColor Green
+        continue
+    }
+
+    $cmdArgs = if ($task.Schedule -eq "Daily20") { "`"$DailyCmd`" --today" } else { "`"$DailyCmd`"" }
+
+    $Action = New-ScheduledTaskAction `
+        -Execute          "cmd.exe" `
+        -Argument         "/c $cmdArgs" `
+        -WorkingDirectory $ScriptDir
+
+    $Trigger = if ($task.Schedule -eq "Daily07") {
+        New-ScheduledTaskTrigger -Daily -At "07:00"
+    } else {
+        New-ScheduledTaskTrigger -Daily -At "20:00"
+    }
+
+    Register-ScheduledTask `
+        -TaskName    $task.Name `
+        -Action      $Action `
+        -Trigger     $Trigger `
+        -Settings    $Settings `
+        -Description $task.Description `
+        -Force | Out-Null
+
+    Write-Host "  OK  $($task.Name)" -ForegroundColor Green
+}
+
+# Eliminar tarea antigua con ruta incorrecta si existe
+$oldTask = Get-ScheduledTask -TaskName "EconomicScript-Daily" -ErrorAction SilentlyContinue
+if ($oldTask) {
+    $oldAction = $oldTask.Actions[0]
+    if ($oldAction.WorkingDirectory -and $oldAction.WorkingDirectory -notlike "*OneDrive*") {
+        Write-Host "  Tarea antigua actualizada con nueva ruta." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "Tareas activas:"
+Get-ScheduledTask | Where-Object { $_.TaskName -like 'EconomicScript*' } |
+    Select-Object TaskName, State | Format-Table -AutoSize
+
 Write-Host "Comandos utiles:"
-Write-Host "  Ver tareas        : Get-ScheduledTask | Where-Object { `$_.TaskName -like 'EconomicScript*' }"
-Write-Host "  Ejecutar manana   : Start-ScheduledTask -TaskName '$TaskName'"
-Write-Host "  Ejecutar tarde    : Start-ScheduledTask -TaskName '$TaskNameEvening'"
-Write-Host "  Eliminar ambas    : 'EconomicScript-Daily','EconomicScript-Evening' | ForEach-Object { Unregister-ScheduledTask -TaskName `$_ -Confirm:`$false }"
+Write-Host "  Probar poll ahora  : Start-ScheduledTask -TaskName 'EconomicScript-Poll'"
+Write-Host "  Probar reporte     : Start-ScheduledTask -TaskName 'EconomicScript-Daily'"
+Write-Host "  Ver ultima ejecucion: Get-ScheduledTaskInfo -TaskName 'EconomicScript-Poll'"
 Write-Host ""
-Write-Host "Los reportes llegaran a la direccion configurada en SMTP_TO del archivo .env"
+Write-Host "Alertas instantaneas + reportes diarios → SMTP_TO en .env"

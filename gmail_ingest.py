@@ -20,7 +20,37 @@ from models import TransactionRecord
 from parsers import BCIParser, BancoEstadoParser, SecurityParser
 
 LOGGER = logging.getLogger(__name__)
-BANK_DOMAINS = ["@bci.cl", "@bancoestado.cl", "@security.cl"]
+# Dominios sin '@' — Gmail IMAP FROM matchea subcadenas (correo.bancoestado.cl, bancosecurity.cl, etc.)
+BANK_DOMAINS = ["bci.cl", "bancoestado.cl", "security.cl", "bancosecurity.cl"]
+
+# Correos bancarios sin transacción financiera — se marcan como procesados sin error
+_SKIP_SUBJECT_KEYWORDS = (
+    "no autorizada",
+    "acceso a informacion",
+    "acceso a información",
+    "cambio de clave",
+    "clave de internet",
+    "bloqueo tdc",
+    "certificado",
+    "liquidacion deuda",
+    "liquidación deuda",
+    "paga tu patente",
+    "beneficio",
+    "descuento",
+    "promocion",
+    "promoción",
+    "cuotas sin interés",
+    "cuotas sin interes",
+)
+_SKIP_BODY_KEYWORDS = (
+    "accediste a visualizar los datos de tu tarjeta",
+    "notificación bloqueo tdc",
+    "notificacion bloqueo tdc",
+    "este mail es generado de manera automática, por favor no responda",
+    "promoción exclusiva",
+    "promocion exclusiva",
+    "beneficios exclusivos",
+)
 
 
 class GmailIngestor:
@@ -82,6 +112,7 @@ class GmailIngestor:
                 "no_parser": 0,
                 "failed": 0,
                 "saved": 0,
+                "skipped": 0,
             }
 
             if progress_callback and uids:
@@ -101,15 +132,25 @@ class GmailIngestor:
                     )
                     body = self._extract_body(msg)
 
+                    if self._should_skip_non_transaction(sender, subject, body):
+                        self._mark_as_processed(mail, uid)
+                        summary["skipped"] += 1
+                        continue
+
                     parser = next(
                         (p for p in self.parsers if p.can_parse(sender=sender, subject=subject, body=body)),
                         None,
                     )
                     if not parser:
-                        summary["no_parser"] += 1
-                        self.db.save_unprocessed_email(
-                            uid.decode(), sender, subject, body, "Sin parser compatible"
-                        )
+                        if self._looks_like_transaction(subject, body):
+                            summary["no_parser"] += 1
+                            self.db.save_unprocessed_email(
+                                uid.decode(), sender, subject, body, "Sin parser compatible"
+                            )
+                        else:
+                            self._mark_as_processed(mail, uid)
+                            summary["skipped"] += 1
+                        continue
                     else:
                         transaction = parser.parse(body=body, gmail_message_id=uid.decode())
                         parsed_transactions.append(transaction)
@@ -134,9 +175,10 @@ class GmailIngestor:
             summary["saved"] = self.db.insert_transactions(parsed_transactions)
             LOGGER.info(
                 "Ingesta completada — encontrados: %s | procesados: %s | "
-                "sin parser: %s | fallidos: %s | guardados: %s",
+                "omitidos: %s | sin parser: %s | fallidos: %s | guardados: %s",
                 summary["found"],
                 summary["processed"],
+                summary["skipped"],
                 summary["no_parser"],
                 summary["failed"],
                 summary["saved"],
@@ -148,6 +190,43 @@ class GmailIngestor:
                 mail.logout()
             except Exception:  # noqa: BLE001
                 pass
+
+    @staticmethod
+    def _should_skip_non_transaction(sender: str, subject: str, body: str) -> bool:
+        """Detecta correos bancarios que no son transacciones (marketing, seguridad, etc.)."""
+        sender_l = sender.lower()
+        if "marketingbanco@" in sender_l or "asistencia.preferencial@" in sender_l:
+            return True
+        if subject.lower().startswith("re:"):
+            return True
+        subject_l = subject.lower()
+        body_l = body.lower()
+        if any(kw in subject_l for kw in _SKIP_SUBJECT_KEYWORDS):
+            return True
+        if any(kw in body_l for kw in _SKIP_BODY_KEYWORDS):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_transaction(subject: str, body: str) -> bool:
+        """Heurística: el correo parece contener un movimiento financiero."""
+        text = f"{subject} {body}".lower()
+        keywords = (
+            "compra",
+            "transferencia",
+            "monto",
+            "cargo",
+            "abono",
+            "giraste",
+            "realizaste",
+            "recibiste",
+            "pago",
+            "transacción",
+            "transaccion",
+            "tarjeta de crédito",
+            "tarjeta de credito",
+        )
+        return any(kw in text for kw in keywords)
 
     def _search_bank_emails(
         self, mail: imaplib.IMAP4_SSL, since_date: date | None = None

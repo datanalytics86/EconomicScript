@@ -75,7 +75,7 @@ def run() -> None:
     summary = ingestor.ingest()
     LOGGER.info(
         "Ingesta completada → encontrados: %(found)s | procesados: %(processed)s | "
-        "guardados: %(saved)s | fallidos: %(failed)s",
+        "omitidos: %(skipped)s | guardados: %(saved)s | fallidos: %(failed)s",
         summary,
     )
 

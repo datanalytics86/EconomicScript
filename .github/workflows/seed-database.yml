@@ -1,0 +1,29 @@
+# Sube tu finance.db local a la nube (una sola vez).
+# Uso: Actions → Seed Database → Run workflow
+# Luego sube finance.db como artifact manualmente O usa el script seed_cloud.ps1
+
+name: Seed Database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inicializar esquema vacío
+        run: python -c "from db import Database; Database('finance.db').init_schema()"
+
+      - name: Guardar BD inicial en cache
+        uses: actions/cache/save@v4
+        with:
+          path: finance.db
+          key: economicscript-db-v2-seed-${{ github.run_id }}
+
+      - name: Instrucciones
+        run: |
+          echo "Cache semilla creado."
+          echo "Para migrar tu BD local con historial, ejecuta desde tu PC:"
+          echo "  powershell -File scripts/seed_cloud.ps1"
