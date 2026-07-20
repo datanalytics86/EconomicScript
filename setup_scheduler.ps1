@@ -31,13 +31,15 @@ $Tasks = @(
     },
     @{
         Name        = "EconomicScript-Daily"
-        Arguments   = "run_daily.py"
-        Description = "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior."
+        # Matutino: reporte completo de AYER (flag --yesterday)
+        Arguments   = "run_daily.py --yesterday"
+        Description = "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior (07:00)."
         Schedule    = "Daily07"
     },
     @{
         Name        = "EconomicScript-Evening"
-        Arguments   = "run_daily.py --today"
+        # Vespertino: default = hoy, partial=True en send_daily_report
+        Arguments   = "run_daily.py"
         Description = "Envia resumen parcial de gastos del dia actual a las 20:00."
         Schedule    = "Daily20"
     }
@@ -76,7 +78,11 @@ foreach ($task in $Tasks) {
         continue
     }
 
-    $cmdArgs = if ($task.Schedule -eq "Daily20") { "`"$DailyCmd`" --today" } else { "`"$DailyCmd`"" }
+    $cmdArgs = if ($task.Schedule -eq "Daily07") {
+        "`"$DailyCmd`" --yesterday"
+    } else {
+        "`"$DailyCmd`""
+    }
 
     $Action = New-ScheduledTaskAction `
         -Execute          "cmd.exe" `
