@@ -53,6 +53,10 @@ SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER: str = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
+# ── Dashboard (deep-link en el email de pendientes) ────────────────────────────
+# URL pública o local del Streamlit, ej: http://localhost:8501
+DASHBOARD_URL: str = os.getenv("DASHBOARD_URL", "")
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE: str = os.getenv("LOG_FILE", str(_BASE_DIR / "economicscript.log"))

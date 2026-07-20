@@ -14,7 +14,11 @@ import plotly.express as px
 import streamlit as st
 
 import config
-from categorizer import assign_category_and_learn, auto_categorize
+from categorizer import (
+    assign_category_and_learn,
+    auto_categorize,
+    reassign_merchant_category,
+)
 from db import Database, get_or_create_category, get_transactions_for_export
 from gmail_ingest import GmailIngestor
 from statement_parser import StatementParser
@@ -42,6 +46,18 @@ def _load_transactions(conn: sqlite3.Connection) -> pd.DataFrame:
         """,
         conn,
     )
+
+
+def _filter_real_expenses(df: pd.DataFrame) -> pd.DataFrame:
+    """Filtra a gasto de consumo real y evita doble conteo gmail + cartola."""
+    from utils import NON_CONSUMPTION_TYPES
+
+    mask_amount = df["amount"] > 0
+    mask_type = df["type"].isna() | ~df["type"].isin(NON_CONSUMPTION_TYPES)
+    mask_source = (df["source"] == "gmail") | (
+        (df["source"] == "cartola") & (df["verified"].fillna(0) == 0)
+    )
+    return df[mask_amount & mask_type & mask_source].copy()
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -82,8 +98,8 @@ def _render_kpis(df: pd.DataFrame) -> None:
         cycle_start - timedelta(days=1)  # un día antes del ciclo → mes anterior
     )
 
-    # Solo gastos (amount > 0); abonos/devoluciones tienen amount < 0
-    gastos = df[df["amount"] > 0]
+    # Gasto real de consumo (sin transferencias/pagos TC y sin doble conteo gmail+cartola)
+    gastos = _filter_real_expenses(df)
 
     gasto_hoy = gastos[gastos["date"].dt.date == today]["amount"].sum()
 
@@ -159,11 +175,11 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
     if bank_filter != "Todos":
         gastos = gastos[gastos["bank"] == bank_filter]
 
-    show_all = col_f3.checkbox("Incluir transferencias y pagos TC", value=True)
+    show_all = col_f3.checkbox("Incluir transferencias y pagos TC", value=False)
 
     if not show_all:
-        exclude_types = {"Transferencia", "Transferencia Propia", "Pago TC", "Pago Producto"}
-        gastos = gastos[~gastos["type"].isin(exclude_types)]
+        # Gasto real: excluye transferencias/pagos TC y evita doble conteo gmail+cartola
+        gastos = _filter_real_expenses(gastos)
 
     if gastos.empty:
         st.info("Sin transacciones con los filtros seleccionados.")
@@ -197,6 +213,12 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
 
     st.divider()
 
+    categories_for_move = pd.read_sql_query(
+        "SELECT id, name FROM categories ORDER BY name", conn
+    )
+    cat_id_by_name = dict(zip(categories_for_move["name"], categories_for_move["id"]))
+    cat_names = categories_for_move["name"].tolist()
+
     for _, cat_row in summary.iterrows():
         cat_name = cat_row["category_name"]
         cat_df = gastos[gastos["category_name"] == cat_name].copy()
@@ -216,15 +238,72 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
             display.columns = ["Fecha", "Banco", "Comercio", "Tipo", "Monto"]
             st.dataframe(display, use_container_width=True, hide_index=True)
 
+            # Recategorización rápida del grupo (por comercio más frecuente o todos)
+            if cat_names:
+                st.caption("Mover movimientos de esta sección a otra categoría:")
+                c_move, c_scope, c_btn = st.columns([2, 2, 1])
+                target_name = c_move.selectbox(
+                    "Nueva categoría",
+                    options=cat_names,
+                    key=f"move_cat_{cat_name}",
+                    label_visibility="collapsed",
+                )
+                scope = c_scope.radio(
+                    "Ámbito",
+                    options=["Todo el grupo", "Solo el comercio más frecuente"],
+                    key=f"move_scope_{cat_name}",
+                    horizontal=True,
+                    label_visibility="collapsed",
+                )
+                if c_btn.button("Mover", key=f"move_btn_{cat_name}", use_container_width=True):
+                    target_id = cat_id_by_name.get(target_name)
+                    if target_id is None or target_name == cat_name:
+                        st.warning("Elige una categoría distinta a la actual.")
+                    else:
+                        with conn:
+                            if scope == "Todo el grupo":
+                                # Solo los movimientos visibles del período/filtro actual
+                                n_moved = 0
+                                learned: set[str] = set()
+                                for _, r in cat_df.iterrows():
+                                    mid = int(r["id"])
+                                    merchant = str(r["merchant"] or "")
+                                    conn.execute(
+                                        "UPDATE transactions SET category_id=? WHERE id=?",
+                                        (int(target_id), mid),
+                                    )
+                                    n_moved += 1
+                                    if merchant and merchant not in learned:
+                                        assign_category_and_learn(
+                                            conn, mid, int(target_id), merchant
+                                        )
+                                        learned.add(merchant)
+                            else:
+                                top_merchant = (
+                                    cat_df["merchant"].value_counts().index[0]
+                                    if not cat_df.empty
+                                    else None
+                                )
+                                n_moved = (
+                                    reassign_merchant_category(
+                                        conn, str(top_merchant), int(target_id)
+                                    )
+                                    if top_merchant is not None and str(top_merchant).strip()
+                                    else 0
+                                )
+                        st.success(f"Movidas {n_moved} transacciones → {target_name}")
+                        st.rerun()
+
 
 # ── Gráficos ───────────────────────────────────────────────────────────────────
 
 def _render_charts(df: pd.DataFrame) -> None:
     col1, col2 = st.columns(2)
+    real = _filter_real_expenses(df)
 
     with col1:
         st.subheader("Gasto por categoría")
-        plot_df = df[df["amount"] > 0].copy()
+        plot_df = real.copy()
         plot_df["category_name"] = plot_df["category_name"].fillna("Sin categoría")
         cat_df = plot_df.groupby("category_name")["amount"].sum().reset_index()
         if cat_df.empty:
@@ -243,14 +322,16 @@ def _render_charts(df: pd.DataFrame) -> None:
 
     with col2:
         st.subheader("Evolución diaria del gasto")
-        daily = (
-            df[df["amount"] > 0]
-            .groupby(df["date"].dt.date)["amount"]
-            .sum()
-            .reset_index()
-        )
-        daily.columns = ["Fecha", "Monto"]
-        st.line_chart(daily, x="Fecha", y="Monto")
+        if real.empty:
+            st.info("Sin gastos de consumo para graficar")
+        else:
+            daily = (
+                real.groupby(real["date"].dt.date)["amount"]
+                .sum()
+                .reset_index()
+            )
+            daily.columns = ["Fecha", "Monto"]
+            st.line_chart(daily, x="Fecha", y="Monto")
 
 
 # ── Ingesta Gmail ──────────────────────────────────────────────────────────────
@@ -454,20 +535,21 @@ def _render_category_manager(conn: sqlite3.Connection) -> None:
                 st.rerun()
 
 
-# ── Categorización manual ──────────────────────────────────────────────────────
+# ── Categorización / recategorización ──────────────────────────────────────────
 
 def _render_categorization(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
-    st.subheader("Transacciones sin categoría")
+    """UI para categorizar pendientes y recategorizar ya clasificadas."""
+    from report_utils import UNCATEGORIZED_LABEL
 
-    uncategorized = df[df["category_id"].isna()].copy()
+    st.subheader("Categorizar y recategorizar")
+    st.caption(
+        "Clasifica pendientes o corrige categorías ya asignadas. "
+        "Al guardar se aprende una regla por comercio."
+    )
+
     categories = pd.read_sql_query(
         "SELECT id, name FROM categories ORDER BY name", conn
     )
-
-    if uncategorized.empty:
-        st.success("Todas las transacciones están categorizadas")
-        return
-
     if categories.empty:
         st.info(
             "Crea categorías en la sección **Gestión de categorías** "
@@ -475,34 +557,233 @@ def _render_categorization(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
         )
         return
 
-    # Botón de auto-categorización
-    if st.button("Auto-categorizar con reglas aprendidas", key="btn_autocategorize"):
-        with conn:
-            n = auto_categorize(conn)
-        st.success(f"Se categorizaron automáticamente {n} transacciones")
-        st.rerun()
+    work = df.copy()
+    work["category_name"] = work["category_name"].fillna(UNCATEGORIZED_LABEL)
+    n_uncat = int(work["category_id"].isna().sum())
+    n_cat = int(work["category_id"].notna().sum())
+
+    m1, m2, m3 = st.columns([1, 1, 2])
+    m1.metric("Sin categoría", n_uncat)
+    m2.metric("Categorizadas", n_cat)
+    with m3:
+        if st.button(
+            "Auto-categorizar con reglas aprendidas",
+            key="btn_autocategorize",
+            use_container_width=True,
+        ):
+            with conn:
+                n = auto_categorize(conn)
+            st.success(f"Se categorizaron automáticamente {n} transacciones")
+            st.rerun()
 
     cat_map = dict(zip(categories["id"], categories["name"]))
     cat_options = categories["id"].tolist()
+    name_to_id = dict(zip(categories["name"], categories["id"]))
 
-    for _, row in uncategorized.iterrows():
-        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-        col1.write(f"**{row['merchant']}**")
-        col2.write(str(row["date"].date()))
-        col3.write(f"${int(row['amount']):,}".replace(",", "."))
-        selected = col4.selectbox(
-            "cat",
-            options=cat_options,
-            format_func=lambda x, m=cat_map: m.get(x, "?"),
-            key=f"cat-{int(row['id'])}",
-            label_visibility="collapsed",
+    # ── Filtros ────────────────────────────────────────────────────────────────
+    f1, f2, f3, f4 = st.columns([1.4, 1.6, 1.2, 1.2])
+    if "recat_view_mode" not in st.session_state:
+        st.session_state["recat_view_mode"] = "Pendientes" if n_uncat else "Ya categorizadas"
+    view_mode = f1.radio(
+        "Mostrar",
+        options=["Pendientes", "Ya categorizadas", "Todas"],
+        horizontal=True,
+        key="recat_view_mode",
+    )
+    search = f2.text_input(
+        "Buscar comercio",
+        placeholder="Ej: JUMBO, UBER…",
+        key="recat_search",
+    )
+    bank_opts = ["Todos"] + config.SUPPORTED_BANKS
+    bank_sel = f3.selectbox("Banco", bank_opts, key="recat_bank")
+    today = pd.Timestamp.now(tz=config.TIMEZONE).date()
+    period = f4.selectbox(
+        "Período",
+        ["Últimos 30 días", "Últimos 90 días", "Ciclo actual", "Todo"],
+        index=0,
+        key="recat_period",
+    )
+
+    filtered = work
+    if view_mode == "Pendientes":
+        filtered = filtered[filtered["category_id"].isna()]
+    elif view_mode == "Ya categorizadas":
+        filtered = filtered[filtered["category_id"].notna()]
+
+    if search.strip():
+        needle = search.strip().upper()
+        filtered = filtered[
+            filtered["merchant"].fillna("").str.upper().str.contains(needle, regex=False)
+        ]
+    if bank_sel != "Todos":
+        filtered = filtered[filtered["bank"] == bank_sel]
+
+    if period == "Últimos 30 días":
+        filtered = filtered[filtered["date"].dt.date >= today - timedelta(days=30)]
+    elif period == "Últimos 90 días":
+        filtered = filtered[filtered["date"].dt.date >= today - timedelta(days=90)]
+    elif period == "Ciclo actual":
+        cycle_start = get_cycle_start_date(today)
+        filtered = filtered[filtered["date"].dt.date >= cycle_start]
+
+    # Solo gastos de consumo por defecto en esta vista (menos ruido)
+    hide_noise = st.checkbox(
+        "Ocultar transferencias y pagos TC",
+        value=True,
+        key="recat_hide_noise",
+    )
+    if hide_noise:
+        filtered = _filter_real_expenses(filtered) if not filtered.empty else filtered
+
+    if filtered.empty:
+        if view_mode == "Pendientes":
+            st.success("No hay pendientes con estos filtros. Cambia a «Ya categorizadas» para corregir.")
+        else:
+            st.info("Sin transacciones con los filtros seleccionados.")
+        return
+
+    tab_merchant, tab_detail = st.tabs(["Por comercio (rápido)", "Detalle por movimiento"])
+
+    # ── Tab: agrupar por comercio ──────────────────────────────────────────────
+    with tab_merchant:
+        grouped = (
+            filtered.groupby(filtered["merchant"].fillna("(sin comercio)"), dropna=False)
+            .agg(
+                movimientos=("id", "count"),
+                total=("amount", "sum"),
+                categorias=("category_name", lambda s: ", ".join(sorted(set(s.astype(str))))),
+                sample_id=("id", "first"),
+            )
+            .reset_index()
+            .rename(columns={"merchant": "comercio"})
+            .sort_values(["movimientos", "total"], ascending=[False, False])
         )
-        if st.button("Guardar", key=f"save-{int(row['id'])}"):
-            with conn:
-                assign_category_and_learn(
-                    conn, int(row["id"]), int(selected), str(row["merchant"])
+
+        st.write(
+            f"**{len(grouped)} comercios** · {len(filtered)} movimientos · "
+            f"${int(filtered['amount'].sum()):,}".replace(",", ".")
+        )
+
+        page_size = 15
+        n_pages = max(1, (len(grouped) + page_size - 1) // page_size)
+        page = st.number_input(
+            "Página",
+            min_value=1,
+            max_value=n_pages,
+            value=1,
+            key="recat_merchant_page",
+        )
+        start = (int(page) - 1) * page_size
+        page_df = grouped.iloc[start : start + page_size]
+
+        for _, grow in page_df.iterrows():
+            merchant = str(grow["comercio"])
+            safe_key = abs(hash(merchant)) % 10_000_000
+            cols = st.columns([3.2, 1.1, 1.3, 2.2, 1.1, 1.1])
+            cols[0].markdown(f"**{merchant}**")
+            cols[1].write(f"{int(grow['movimientos'])} mov.")
+            cols[2].write(f"${int(grow['total']):,}".replace(",", "."))
+            cols[3].caption(str(grow["categorias"]))
+
+            # Preseleccionar categoría actual si es única
+            current_names = [c.strip() for c in str(grow["categorias"]).split(",")]
+            default_idx = 0
+            if len(current_names) == 1 and current_names[0] in name_to_id:
+                try:
+                    default_idx = cat_options.index(name_to_id[current_names[0]])
+                except ValueError:
+                    default_idx = 0
+
+            selected = cols[4].selectbox(
+                "cat",
+                options=cat_options,
+                index=default_idx,
+                format_func=lambda x, m=cat_map: m.get(x, "?"),
+                key=f"mcat-{safe_key}",
+                label_visibility="collapsed",
+            )
+            if cols[5].button(
+                "Aplicar",
+                key=f"mapply-{safe_key}",
+                use_container_width=True,
+                help=f"Asigna la categoría a los {int(grow['movimientos'])} movimientos de este comercio",
+            ):
+                with conn:
+                    n = reassign_merchant_category(conn, merchant, int(selected))
+                st.success(
+                    f"«{merchant}» → {cat_map[selected]} ({n} mov.)"
                 )
-            st.rerun()
+                st.rerun()
+
+        st.caption(f"Página {page} de {n_pages}")
+
+    # ── Tab: detalle por movimiento ────────────────────────────────────────────
+    with tab_detail:
+        detail = filtered.sort_values("date", ascending=False)
+        page_size_d = 20
+        n_pages_d = max(1, (len(detail) + page_size_d - 1) // page_size_d)
+        page_d = st.number_input(
+            "Página",
+            min_value=1,
+            max_value=n_pages_d,
+            value=1,
+            key="recat_detail_page",
+        )
+        start_d = (int(page_d) - 1) * page_size_d
+        page_detail = detail.iloc[start_d : start_d + page_size_d]
+
+        apply_all_same = st.checkbox(
+            "Al guardar una, aplicar también a todo el mismo comercio",
+            value=True,
+            key="recat_apply_same_merchant",
+        )
+
+        hdr = st.columns([2.6, 1.2, 1.1, 1.4, 1.8, 1.0])
+        hdr[0].markdown("**Comercio**")
+        hdr[1].markdown("**Fecha**")
+        hdr[2].markdown("**Monto**")
+        hdr[3].markdown("**Actual**")
+        hdr[4].markdown("**Nueva**")
+        hdr[5].markdown("**Acción**")
+
+        for _, row in page_detail.iterrows():
+            tx_id = int(row["id"])
+            cols = st.columns([2.6, 1.2, 1.1, 1.4, 1.8, 1.0])
+            cols[0].write(str(row["merchant"] or "—"))
+            cols[1].write(str(row["date"].date()) if pd.notna(row["date"]) else "—")
+            cols[2].write(f"${int(row['amount']):,}".replace(",", "."))
+            cols[3].caption(str(row["category_name"]))
+
+            current_id = row["category_id"]
+            default_idx = 0
+            if pd.notna(current_id):
+                try:
+                    default_idx = cat_options.index(int(current_id))
+                except ValueError:
+                    default_idx = 0
+
+            selected = cols[4].selectbox(
+                "cat",
+                options=cat_options,
+                index=default_idx,
+                format_func=lambda x, m=cat_map: m.get(x, "?"),
+                key=f"dcat-{tx_id}",
+                label_visibility="collapsed",
+            )
+            if cols[5].button("Guardar", key=f"dsave-{tx_id}", use_container_width=True):
+                merchant = str(row["merchant"] or "")
+                with conn:
+                    if apply_all_same and merchant:
+                        n = reassign_merchant_category(conn, merchant, int(selected))
+                        msg = f"{n} mov. de «{merchant}» → {cat_map[selected]}"
+                    else:
+                        assign_category_and_learn(conn, tx_id, int(selected), merchant)
+                        msg = f"Transacción {tx_id} → {cat_map[selected]}"
+                st.success(msg)
+                st.rerun()
+
+        st.caption(f"{len(detail)} movimientos · página {page_d} de {n_pages_d}")
 
 
 # ── Pendientes de verificación ─────────────────────────────────────────────────
@@ -695,6 +976,15 @@ def main() -> None:
     )
     st.title("Consolidado financiero personal")
 
+    # Deep-link desde el email: ?view=categorizar
+    focus_categorize = st.query_params.get("view", "").lower() in {
+        "categorizar",
+        "categorize",
+        "pendientes",
+    }
+    if focus_categorize and "recat_view_mode" not in st.session_state:
+        st.session_state["recat_view_mode"] = "Pendientes"
+
     Database(config.DB_PATH).init_schema(config.SCHEMA_PATH)
 
     with get_db() as conn:
@@ -729,13 +1019,36 @@ def main() -> None:
                 config.TIMEZONE
             )
 
+        n_uncat = int(df["category_id"].isna().sum())
+        if n_uncat:
+            st.warning(
+                f"**{n_uncat} transacciones sin categoría.** "
+                "Ve a **Categorizar y recategorizar** — al guardar un comercio, "
+                "la regla se reutiliza en las próximas compras."
+            )
+        if focus_categorize:
+            st.info(
+                "Llegaste desde el link de pendientes del email. "
+                "La sección de categorización está lista abajo (filtro: Pendientes)."
+            )
+
         _render_kpis(df)
         st.divider()
-        _render_spending_by_category(conn, df)
-        st.divider()
-        _render_charts(df)
-        st.divider()
-        _render_categorization(conn, df)
+
+        # Si viene del email, prioriza la acción de categorizar
+        if focus_categorize:
+            _render_categorization(conn, df)
+            st.divider()
+            _render_spending_by_category(conn, df)
+            st.divider()
+            _render_charts(df)
+        else:
+            _render_spending_by_category(conn, df)
+            st.divider()
+            _render_charts(df)
+            st.divider()
+            _render_categorization(conn, df)
+
         st.divider()
         _render_pending(conn)
         st.divider()

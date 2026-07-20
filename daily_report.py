@@ -10,8 +10,15 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import config
-from report_utils import build_category_groups_html, fetch_transactions_grouped, get_connection
-from utils import get_cycle_start_date
+from categorizer import auto_categorize
+from report_utils import (
+    build_category_groups_html,
+    build_uncategorized_html,
+    fetch_transactions_grouped,
+    fetch_uncategorized_expenses,
+    get_connection,
+)
+from utils import NON_CONSUMPTION_TYPES, get_cycle_start_date
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +35,12 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 
     conn = get_connection()
     try:
+        # Aplica reglas aprendidas antes del residual, para no listar lo ya resoluble
+        n_auto = auto_categorize(conn)
+        if n_auto:
+            conn.commit()
+            LOGGER.info("Auto-categorizadas %s transacciones antes del reporte", n_auto)
+
         day_groups = fetch_transactions_grouped(
             conn, since=report_date, until=report_date, expenses_only=True
         )
@@ -49,23 +62,36 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
             empty_message="Sin gastos en el ciclo",
         )
 
-        # Gasto diario de los últimos 10 días (solo compras/débitos)
+        uncategorized_day = fetch_uncategorized_expenses(
+            conn, since=report_date, until=report_date
+        )
+        uncategorized_html = build_uncategorized_html(
+            uncategorized_day,
+            title="Pendientes de categorizar (hoy)",
+            dashboard_url=config.DASHBOARD_URL or None,
+        )
+
+        # Gasto diario de los últimos 10 días (gasto real de consumo + dedupe fuentes)
+        non_consumption = sorted(NON_CONSUMPTION_TYPES)
+        placeholders = ", ".join("?" for _ in non_consumption)
         last10_rows = conn.execute(
-            """
+            f"""
             SELECT DATE(t.date) AS day, SUM(t.amount) AS total
             FROM transactions t
             WHERE DATE(t.date) > DATE(?, '-10 days') AND t.amount > 0
-              AND t.type NOT LIKE 'Transferencia%'
+              AND (t.type IS NULL OR t.type NOT IN ({placeholders}))
+              AND (t.source = 'gmail' OR (t.source = 'cartola' AND COALESCE(t.verified, 0) = 0))
             GROUP BY day
             ORDER BY day DESC
             """,
-            (report_date.isoformat(),),
+            (report_date.isoformat(), *non_consumption),
         ).fetchall()
     finally:
         conn.close()
 
     total_day = sum(r["amount"] for r in day_rows)
     total_cycle = sum(r["total"] for r in cycle_rows)
+    n_uncat = len(uncategorized_day)
 
     day_label = report_date.strftime("%d/%m/%Y")
     cycle_label = cycle_start.strftime("%d/%m/%Y")
@@ -74,7 +100,8 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         if partial
         else f"Resumen financiero &mdash; {day_label}"
     )
-
+    if n_uncat:
+        h2_title += f" &middot; {n_uncat} sin categor\u00eda"
 
     last10_map = {r['day']: r['total'] for r in last10_rows}
     last10_days = [report_date - timedelta(days=i) for i in range(10)]
@@ -109,6 +136,10 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 </head>
 <body>
   <h2>{h2_title}</h2>
+
+  {uncategorized_html}
+
+  <hr style="margin:32px 0;border:none;border-top:2px solid #e0e0e0;">
 
   {day_by_category_html}
 
@@ -175,6 +206,22 @@ def send_daily_report(
         subject_suffix = " (hoy - parcial)"
     else:
         subject_suffix = ""
+
+    # Aviso en el asunto si aún hay residual de categorización ese día
+    try:
+        conn_subj = get_connection()
+        try:
+            n_uncat_subj = len(
+                fetch_uncategorized_expenses(
+                    conn_subj, since=report_date, until=report_date
+                )
+            )
+        finally:
+            conn_subj.close()
+    except Exception:
+        n_uncat_subj = 0
+    if n_uncat_subj:
+        subject_suffix = f"{subject_suffix} · {n_uncat_subj} sin categoría"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[EconomicScript] Resumen {day_label}{subject_suffix}"

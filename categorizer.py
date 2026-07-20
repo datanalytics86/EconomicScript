@@ -142,18 +142,75 @@ def auto_categorize(conn: sqlite3.Connection) -> int:
     return updated
 
 
+def _upsert_merchant_rule(
+    conn: sqlite3.Connection,
+    merchant: str,
+    category_id: int,
+) -> str:
+    """Registra (o reemplaza) la regla del comercio. Retorna el pattern normalizado."""
+    pattern = _normalize_merchant(merchant)
+    if not pattern:
+        return pattern
+    # Una sola categoría “correcta” por comercio: limpia reglas previas del mismo pattern
+    conn.execute("DELETE FROM category_rules WHERE UPPER(pattern) = UPPER(?)", (pattern,))
+    conn.execute(
+        "INSERT INTO category_rules(pattern, category_id) VALUES(?, ?)",
+        (pattern, category_id),
+    )
+    return pattern
+
+
 def assign_category_and_learn(
     conn: sqlite3.Connection,
     transaction_id: int,
     category_id: int,
     merchant: str,
 ) -> None:
+    """Asigna categoría a una transacción y aprende la regla del comercio."""
     conn.execute(
         "UPDATE transactions SET category_id=? WHERE id=?",
         (category_id, transaction_id),
     )
+    _upsert_merchant_rule(conn, merchant, category_id)
+
+
+def reassign_merchant_category(
+    conn: sqlite3.Connection,
+    merchant: str,
+    category_id: int,
+    *,
+    only_uncategorized: bool = False,
+) -> int:
+    """Reasigna todas las transacciones del mismo comercio y actualiza la regla.
+
+    El match usa el comercio normalizado (mayúsculas, espacios colapsados) para
+    unificar variantes menores del mismo nombre.
+
+    Returns:
+        Número de filas actualizadas en ``transactions``.
+    """
     pattern = _normalize_merchant(merchant)
-    conn.execute(
-        "INSERT OR IGNORE INTO category_rules(pattern, category_id) VALUES(?, ?)",
-        (pattern, category_id),
+    if not pattern:
+        return 0
+
+    rows = conn.execute(
+        "SELECT id, merchant, category_id FROM transactions"
+    ).fetchall()
+    ids: list[int] = []
+    for row in rows:
+        if only_uncategorized and row["category_id"] is not None:
+            continue
+        if _normalize_merchant(row["merchant"] or "") == pattern:
+            ids.append(int(row["id"]))
+
+    if not ids:
+        _upsert_merchant_rule(conn, merchant, category_id)
+        return 0
+
+    placeholders = ", ".join("?" for _ in ids)
+    cursor = conn.execute(
+        f"UPDATE transactions SET category_id = ? WHERE id IN ({placeholders})",
+        (category_id, *ids),
     )
+    _upsert_merchant_rule(conn, merchant, category_id)
+    return int(cursor.rowcount)

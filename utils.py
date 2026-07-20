@@ -86,3 +86,22 @@ def compute_content_hash(bank: str, date: str, amount: int, merchant: str) -> st
 
     payload = f"{bank}|{date}|{amount}|{merchant.strip().upper()}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+NON_CONSUMPTION_TYPES = frozenset({
+    "Transferencia",
+    "Transferencia Propia",
+    "Transferencia Entrante",
+    "Transferencia Recibida",
+    "Pago TC",
+    "Pago Producto",
+})
+
+
+def is_real_expense(amount: int, tx_type: str | None) -> bool:
+    """True si es un gasto real de consumo (compra, etc.)."""
+    if amount <= 0:
+        return False
+    if tx_type and tx_type in NON_CONSUMPTION_TYPES:
+        return False
+    return True
