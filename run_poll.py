@@ -39,6 +39,16 @@ _LOCK_FILE = _LOG_DIR / "poll.lock"
 _BACKLOG_THRESHOLD = 15  # correos encontrados: modo silencioso (sin alertas masivas)
 
 
+def _assert_config() -> None:
+    missing = config.missing_runtime_config(need_smtp=True)
+    if missing:
+        raise SystemExit(
+            "Config incompleta en .env (placeholders o vacíos): "
+            + ", ".join(missing)
+            + ". Completa las credenciales antes de ejecutar el poll."
+        )
+
+
 def _get_max_transaction_id(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM transactions").fetchone()
     return int(row[0])
@@ -110,6 +120,7 @@ def run() -> None:
 
 def _run_locked() -> None:
     LOGGER.info("─── Poll Gmail iniciado ───")
+    _assert_config()
 
     db = Database(config.DB_PATH)
     db.init_schema(config.SCHEMA_PATH)

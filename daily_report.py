@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import smtplib
-import sqlite3
 from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -28,8 +27,12 @@ def _format_clp(amount: int) -> str:
     return f"${abs(amount):,.0f}".replace(",", ".")
 
 
-def _build_html_report(report_date: date, partial: bool = False) -> str:
-    """Genera el cuerpo HTML del reporte con transacciones del día y acumulado del ciclo."""
+def _build_html_report(report_date: date, partial: bool = False) -> tuple[str, int]:
+    """Genera el cuerpo HTML del reporte.
+
+    Returns:
+        (html, n_uncategorized) — n_uncategorized alimenta el asunto del email.
+    """
 
     cycle_start = get_cycle_start_date(report_date)
 
@@ -163,7 +166,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 
   <p class="footer">Generado autom&aacute;ticamente por EconomicScript &middot; {day_label}</p>
 </body>
-</html>"""
+</html>""", n_uncat
 
 
 def send_daily_report(
@@ -181,7 +184,7 @@ def send_daily_report(
         report_date = date.today() if partial else date.today() - timedelta(days=1)
 
     smtp_to = config.SMTP_TO
-    if not smtp_to:
+    if not smtp_to or config._is_placeholder(smtp_to):
         LOGGER.warning(
             "SMTP_TO no configurado en .env — no se enviará el reporte. "
             "Agrega SMTP_TO=tu_correo@gmail.com al archivo .env"
@@ -191,14 +194,19 @@ def send_daily_report(
     smtp_user = config.SMTP_USER or config.IMAP_USER
     smtp_password = config.SMTP_PASSWORD
 
-    if not smtp_user or not smtp_password:
+    if (
+        not smtp_user
+        or not smtp_password
+        or config._is_placeholder(smtp_password)
+        or config._is_placeholder(smtp_user)
+    ):
         LOGGER.error(
             "Credenciales SMTP no disponibles. "
             "Configura SMTP_USER/SMTP_PASSWORD en .env (usa una App Password de Google)"
         )
         return
 
-    html_body = _build_html_report(report_date, partial=partial)
+    html_body, n_uncat = _build_html_report(report_date, partial=partial)
     day_label = report_date.strftime("%d/%m/%Y")
     if slot_label:
         subject_suffix = f" — {slot_label}"
@@ -207,21 +215,8 @@ def send_daily_report(
     else:
         subject_suffix = ""
 
-    # Aviso en el asunto si aún hay residual de categorización ese día
-    try:
-        conn_subj = get_connection()
-        try:
-            n_uncat_subj = len(
-                fetch_uncategorized_expenses(
-                    conn_subj, since=report_date, until=report_date
-                )
-            )
-        finally:
-            conn_subj.close()
-    except Exception:
-        n_uncat_subj = 0
-    if n_uncat_subj:
-        subject_suffix = f"{subject_suffix} · {n_uncat_subj} sin categoría"
+    if n_uncat:
+        subject_suffix = f"{subject_suffix} · {n_uncat} sin categoría"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[EconomicScript] Resumen {day_label}{subject_suffix}"

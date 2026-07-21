@@ -58,6 +58,14 @@ def _parse_args() -> argparse.Namespace:
 
 def run() -> None:
     args = _parse_args()
+    missing = config.missing_runtime_config(need_smtp=True)
+    if missing:
+        LOGGER.error(
+            "Config incompleta en .env: %s. Completa credenciales y reintenta.",
+            ", ".join(missing),
+        )
+        sys.exit(1)
+
     today = date.today()
     report_date = today - timedelta(days=1) if args.yesterday else today
     LOGGER.info("═══ Inicio ejecución — reporte del %s ═══", report_date.isoformat())

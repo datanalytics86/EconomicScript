@@ -49,13 +49,21 @@ def _load_transactions(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def _filter_real_expenses(df: pd.DataFrame) -> pd.DataFrame:
-    """Filtra a gasto de consumo real y evita doble conteo gmail + cartola."""
+    """Filtra a gasto de consumo real y evita doble conteo gmail + cartola.
+
+    Equivalente vectorizado de ``is_real_expense`` + dedupe de fuentes
+    (gmail, o cartola aún no reconciliada).
+    """
     from utils import NON_CONSUMPTION_TYPES
+
+    if df.empty:
+        return df.copy()
 
     mask_amount = df["amount"] > 0
     mask_type = df["type"].isna() | ~df["type"].isin(NON_CONSUMPTION_TYPES)
+    verified = pd.to_numeric(df["verified"], errors="coerce").fillna(0)
     mask_source = (df["source"] == "gmail") | (
-        (df["source"] == "cartola") & (df["verified"].fillna(0) == 0)
+        (df["source"] == "cartola") & (verified == 0)
     )
     return df[mask_amount & mask_type & mask_source].copy()
 
@@ -647,16 +655,19 @@ def _render_categorization(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
 
     # ── Tab: agrupar por comercio ──────────────────────────────────────────────
     with tab_merchant:
+        tmp = filtered.copy()
+        tmp["comercio"] = tmp["merchant"].fillna("(sin comercio)").astype(str)
         grouped = (
-            filtered.groupby(filtered["merchant"].fillna("(sin comercio)"), dropna=False)
+            tmp.groupby("comercio", dropna=False)
             .agg(
                 movimientos=("id", "count"),
                 total=("amount", "sum"),
-                categorias=("category_name", lambda s: ", ".join(sorted(set(s.astype(str))))),
-                sample_id=("id", "first"),
+                categorias=(
+                    "category_name",
+                    lambda s: ", ".join(sorted(set(s.astype(str)))),
+                ),
             )
             .reset_index()
-            .rename(columns={"merchant": "comercio"})
             .sort_values(["movimientos", "total"], ascending=[False, False])
         )
 

@@ -96,6 +96,11 @@ def run(args: argparse.Namespace | None = None) -> None:
     report_date, partial = _report_params(slot, today)
     label = SLOT_LABELS[slot]
 
+    missing = config.missing_runtime_config(need_smtp=True)
+    if missing:
+        LOGGER.error("Secrets incompletos: %s", ", ".join(missing))
+        sys.exit(1)
+
     LOGGER.info("═══ Cloud run — %s — reporte %s ═══", label, report_date.isoformat())
 
     db = Database(config.DB_PATH)

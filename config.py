@@ -60,3 +60,47 @@ DASHBOARD_URL: str = os.getenv("DASHBOARD_URL", "")
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE: str = os.getenv("LOG_FILE", str(_BASE_DIR / "economicscript.log"))
+
+
+def _is_placeholder(value: str) -> bool:
+    """True si el valor está vacío o es un placeholder del .env.example."""
+    v = (value or "").strip().lower()
+    if not v:
+        return True
+    # Placeholders explícitos del template
+    if v.startswith("tu_") or v.startswith("your_"):
+        return True
+    if "tu_client_id" in v or v in {
+        "tu_client_secret",
+        "tu_refresh_token",
+        "changeme",
+        "xxx",
+        "replace_me",
+    }:
+        return True
+    if v.endswith("@example.com") or "example.apps.googleusercontent.com" in v:
+        return True
+    return False
+
+
+def missing_runtime_config(*, need_smtp: bool = False) -> list[str]:
+    """Lista de variables de entorno faltantes o aún con placeholder.
+
+    Args:
+        need_smtp: Si True, exige SMTP_PASSWORD (envío de reportes/alertas).
+    """
+    missing: list[str] = []
+    if _is_placeholder(IMAP_USER):
+        missing.append("IMAP_USER")
+    if _is_placeholder(OAUTH_CLIENT_ID):
+        missing.append("OAUTH_CLIENT_ID")
+    if _is_placeholder(OAUTH_CLIENT_SECRET):
+        missing.append("OAUTH_CLIENT_SECRET")
+    if _is_placeholder(OAUTH_REFRESH_TOKEN):
+        missing.append("OAUTH_REFRESH_TOKEN")
+    if need_smtp and _is_placeholder(SMTP_PASSWORD):
+        missing.append("SMTP_PASSWORD")
+    # El reporte exige SMTP_TO explícito (no cae a IMAP_USER como destinatario)
+    if need_smtp and _is_placeholder(SMTP_TO):
+        missing.append("SMTP_TO")
+    return missing

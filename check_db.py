@@ -40,16 +40,25 @@ def main() -> None:
             print(f"    subject : {r['subject']}")
             print(f"    error   : {r['error_reason']}")
 
-        # --- transacciones por día/banco ---
+        # --- gasto real de consumo por día/banco (sin transferencias/pagos TC + dedupe) ---
+        from utils import NON_CONSUMPTION_TYPES
+
+        types = sorted(NON_CONSUMPTION_TYPES)
+        ph = ", ".join("?" for _ in types)
         rows2 = conn.execute(
-            "SELECT DATE(date) AS day, bank, COUNT(*) AS n, SUM(amount) AS total "
-            "FROM transactions "
-            "WHERE amount > 0 "
-            "GROUP BY DATE(date), bank "
-            "ORDER BY day DESC "
-            "LIMIT 40"
+            f"""
+            SELECT DATE(date) AS day, bank, COUNT(*) AS n, SUM(amount) AS total
+            FROM transactions
+            WHERE amount > 0
+              AND (type IS NULL OR type NOT IN ({ph}))
+              AND (source = 'gmail' OR (source = 'cartola' AND COALESCE(verified, 0) = 0))
+            GROUP BY DATE(date), bank
+            ORDER BY day DESC
+            LIMIT 40
+            """,
+            types,
         ).fetchall()
-        print(f"\n=== Transacciones por día/banco (últimos 40 registros) ===")
+        print("\n=== Gasto real por día/banco (últimos 40 grupos) ===")
         for r in rows2:
             print(f"  {r['day']}  {r['bank']:<14} {r['n']:>4} txs   ${r['total']:>12,.0f}")
     finally:
