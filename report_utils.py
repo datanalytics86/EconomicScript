@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import config
-from utils import CONSUMPTION_SQL_FILTER, format_clp
+from utils import (
+    CONSUMPTION_CATEGORY_SQL_FILTER,
+    CONSUMPTION_SQL_FILTER,
+    format_clp,
+    is_consumption_category,
+    is_consumption_type,
+)
 
 UNCATEGORIZED_LABEL = "Sin categoría"
 # Categoría solo de voids: no se muestra; el neto va al comercio de la compra
@@ -56,8 +62,15 @@ def fetch_raw_consumption(
     since: date | None = None,
     until: date | None = None,
 ) -> list[sqlite3.Row]:
-    """Filas de consumo (incluye Anulación TC negativa) en el rango."""
-    filters: list[str] = [f"({CONSUMPTION_SQL_FILTER})"]
+    """Filas de consumo real (incluye Anulación TC negativa) en el rango.
+
+    Excluye transferencias y pagos de tarjeta por **type** y por **categoría**
+    (Transferencias / Pagos tarjeta / Ingresos no son gasto).
+    """
+    filters: list[str] = [
+        f"({CONSUMPTION_SQL_FILTER})",
+        f"({CONSUMPTION_CATEGORY_SQL_FILTER})",
+    ]
     params: list[str] = []
     if since is not None:
         filters.append("DATE(t.date) >= ?")
@@ -86,6 +99,7 @@ def net_lines_from_rows(rows: list) -> list[NetLine]:
     - Ejemplo: +1000 y −990 → una línea neta de +10.
     - Uber +8000 +8190 −8000 → una línea de +8190.
     - Líneas con neto 0 se ocultan.
+    - Transferencias / pagos TC se ignoran (no son gasto).
     - Categoría = la de la compra (no Ajustes/Anulaciones).
     """
     # key → aggregates
@@ -98,6 +112,13 @@ def net_lines_from_rows(rows: list) -> list[NetLine]:
         cat = (r["category"] if hasattr(r, "keys") else r.get("category")) or UNCATEGORIZED_LABEL
         tx_type = r["type"] if hasattr(r, "keys") else r.get("type")
         dt = r["date"] if hasattr(r, "keys") else r.get("date")
+
+        # Defensa en profundidad: nunca tratar transferencias/pagos como gasto
+        if not is_consumption_type(tx_type):
+            continue
+        if not is_consumption_category(cat):
+            continue
+
         key = _norm_merchant(merchant)
 
         if key not in buckets:
@@ -155,10 +176,12 @@ def net_lines_from_rows(rows: list) -> list[NetLine]:
 
 
 def group_net_lines(lines: list[NetLine]) -> list[CategoryGroup]:
-    """Agrupa líneas netas por categoría (sin Ajustes/Anulaciones)."""
+    """Agrupa líneas netas por categoría (sin Ajustes ni Transferencias/Pagos)."""
     by_cat: dict[str, list[NetLine]] = defaultdict(list)
     for line in lines:
         cat = line.category if line.category != _VOID_CATEGORY else UNCATEGORIZED_LABEL
+        if not is_consumption_category(cat):
+            continue  # Transferencias / Pagos tarjeta / Ingresos fuera del gasto
         by_cat[cat].append(line)
 
     result: list[CategoryGroup] = []

@@ -184,7 +184,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     </div>
 
     <p style="text-align:center;color:#a0aab4;font-size:11px;margin:20px 0 0;">
-      Consumo neto · sin transferencias ni pagos de tarjeta · anulaciones ya consolidadas
+      Solo gasto de consumo · transferencias y pagos de tarjeta excluidos · anulaciones neteadas
     </p>
   </div>
 </body>

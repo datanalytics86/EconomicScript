@@ -682,7 +682,7 @@ def test_security_anulacion() -> None:
 # ─────────────────────────────────────────────
 
 def test_is_consumption_type_includes_anulacion() -> None:
-    from utils import is_consumption_type, is_real_expense
+    from utils import is_consumption_category, is_consumption_type, is_real_expense
 
     assert is_consumption_type("Compra TC")
     assert is_consumption_type("Compra TC FX")
@@ -691,6 +691,15 @@ def test_is_consumption_type_includes_anulacion() -> None:
     assert not is_consumption_type("Transferencia")
     assert not is_consumption_type("Pago TC")
     assert not is_consumption_type("Transferencia Propia")
+    assert not is_consumption_type("Transferencia Entrante")
+    assert not is_consumption_type("Transferencia Recibida")
+    assert not is_consumption_type("Pago Producto")
+    assert not is_consumption_category("Transferencias")
+    assert not is_consumption_category("Pagos tarjeta")
+    assert not is_consumption_category("Ingresos")
+    assert is_consumption_category("Transporte")
+    assert not is_real_expense("Transferencia", 100000, "Transferencias")
+    assert not is_real_expense("Compra TC", 1000, "Transferencias")
 
 
 def test_uber_preauth_netting() -> None:

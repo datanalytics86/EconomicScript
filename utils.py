@@ -141,19 +141,48 @@ _NON_CONSUMPTION_PREFIXES: tuple[str, ...] = (
     "Transferencia",
     "Pago TC",
     "Pago Producto",
+    "Pago ",  # Pago * genérico (no es compra)
+)
+
+# Categorías que nunca son "gasto de bolsillo" (aunque el type esté mal)
+NON_CONSUMPTION_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Transferencias",
+        "Pagos tarjeta",
+        "Ingresos",
+    }
 )
 
 # Fragmento SQL reutilizable (alias de tabla `t`) para filtros de consumo neto.
-# Incluye Anulación TC (amount < 0) y excluye transferencias/pagos.
+# Incluye Anulación TC / Compra TC (amount puede ser < 0) y excluye
+# transferencias y pagos de tarjeta por type (y por categoría vía JOIN).
 CONSUMPTION_SQL_FILTER: str = (
-    "t.type NOT LIKE 'Transferencia%' "
-    "AND t.type NOT LIKE 'Pago TC%' "
-    "AND t.type NOT LIKE 'Pago Producto%'"
+    "("
+    "  t.type NOT LIKE 'Transferencia%'"
+    "  AND t.type NOT LIKE 'Pago TC%'"
+    "  AND t.type NOT LIKE 'Pago Producto%'"
+    "  AND COALESCE(t.type, '') NOT IN ("
+    "    'Transferencia','Transferencia Propia',"
+    "    'Transferencia Entrante','Transferencia Recibida',"
+    "    'Pago TC','Pago Producto'"
+    "  )"
+    ")"
+)
+
+# Exclusión por nombre de categoría (requiere LEFT JOIN categories c)
+CONSUMPTION_CATEGORY_SQL_FILTER: str = (
+    "("
+    "  c.name IS NULL"
+    "  OR c.name NOT IN ('Transferencias', 'Pagos tarjeta', 'Ingresos')"
+    ")"
 )
 
 
 def is_consumption_type(tx_type: str | None) -> bool:
-    """True si el tipo cuenta para gasto de consumo neto (incluye Anulación TC)."""
+    """True si el tipo cuenta para gasto de consumo neto (incluye Anulación TC).
+
+    Transferencias y pagos de tarjeta → False (no son gasto de consumo).
+    """
     if not tx_type:
         return True
     if tx_type in NON_CONSUMPTION_TYPES:
@@ -161,14 +190,29 @@ def is_consumption_type(tx_type: str | None) -> bool:
     return not any(tx_type.startswith(p) for p in _NON_CONSUMPTION_PREFIXES)
 
 
-def is_real_expense(tx_type: str | None, amount: int | None = None) -> bool:
-    """Alias semántico: fila que entra al total de gasto real (consumo neto).
+def is_consumption_category(category: str | None) -> bool:
+    """False para Transferencias / Pagos tarjeta / Ingresos."""
+    if not category:
+        return True
+    return category.strip() not in NON_CONSUMPTION_CATEGORIES
 
-    No filtra por signo: las anulaciones (amount < 0) deben sumarse para netear.
-    El parámetro amount se acepta por compatibilidad/API y no se usa en el filtro.
+
+def is_real_expense(
+    tx_type: str | None,
+    amount: int | None = None,
+    category: str | None = None,
+) -> bool:
+    """Fila que entra al total de gasto real (consumo neto).
+
+    - Incluye Anulación TC (amount < 0) para netear preauth.
+    - Excluye transferencias, pagos TC y categorías no-consumo.
     """
-    del amount  # API estable; el neteo se hace sumando amounts en el caller
-    return is_consumption_type(tx_type)
+    del amount
+    if not is_consumption_type(tx_type):
+        return False
+    if not is_consumption_category(category):
+        return False
+    return True
 
 
 def format_clp(amount: int) -> str:

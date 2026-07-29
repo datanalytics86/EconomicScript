@@ -18,7 +18,12 @@ from categorizer import assign_category_and_learn, auto_categorize
 from db import Database, get_or_create_category, get_transactions_for_export
 from gmail_ingest import GmailIngestor
 from statement_parser import StatementParser
-from utils import format_clp, get_cycle_start_date, is_consumption_type
+from utils import (
+    format_clp,
+    get_cycle_start_date,
+    is_consumption_category,
+    is_consumption_type,
+)
 
 
 @contextmanager
@@ -45,16 +50,20 @@ def _load_transactions(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def _filter_real_expenses(df: pd.DataFrame) -> pd.DataFrame:
-    """Gasto de consumo neto: compras + anulaciones (amount < 0); sin transferencias/pagos TC.
+    """Gasto de consumo neto: compras + anulaciones; sin transferencias ni pagos TC.
 
     Las anulaciones **sí entran** (monto negativo) para netear preautorizaciones.
-    No filtrar por amount > 0.
+    Transferencias / pagos de tarjeta / ingresos **no** son gasto.
     """
     if df.empty:
         return df.copy()
-    if "type" not in df.columns:
-        return df.copy()
-    return df[df["type"].map(is_consumption_type)].copy()
+    out = df
+    if "type" in out.columns:
+        out = out[out["type"].map(is_consumption_type)]
+    cat_col = "category_name" if "category_name" in out.columns else None
+    if cat_col:
+        out = out[out[cat_col].map(lambda c: is_consumption_category(c))]
+    return out.copy()
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────

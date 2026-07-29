@@ -110,6 +110,19 @@ def test_fetch_grouped_all_includes_transfers() -> None:
     assert "Transferencia" in types_seen
 
 
+def test_expenses_only_never_includes_transfers() -> None:
+    """Transferencias y pagos TC no entran al total de gasto ni a categorías."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _seed(conn)
+    groups = fetch_transactions_grouped(
+        conn, since=date(2026, 7, 26), until=date(2026, 7, 26), expenses_only=True
+    )
+    assert all(g.category not in ("Transferencias", "Pagos tarjeta", "Ingresos") for g in groups)
+    # Seed tiene transferencia 100000 y pago 50000; no deben inflar el total
+    assert sum(g.total for g in groups) == 8200  # uber 8190 + cafe 10
+
+
 def test_cycle_starts_on_27() -> None:
     assert get_cycle_start_date(date(2026, 7, 29)) == date(2026, 7, 27)
     assert get_cycle_start_date(date(2026, 8, 10)) == date(2026, 7, 27)
