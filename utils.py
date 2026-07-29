@@ -56,32 +56,53 @@ def parse_chilean_date(raw_date: str) -> datetime:
     )
 
 
+# Día de corte del ciclo de gasto (ej. 27 → ciclo 27/jul–26/ago = “Agosto”)
+CYCLE_START_DAY: int = 27
+
+_MONTHS_ES: tuple[str, ...] = (
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+)
+
+
 def get_cycle_start_date(today: date | None = None) -> date:
-    """Retorna el 2do-último día hábil del mes anterior como inicio del ciclo de gasto.
+    """Inicio del ciclo de gasto: día 27 del mes en curso o del anterior.
 
-    Los días hábiles excluyen fines de semana y feriados legales chilenos.
-    El ciclo se resetea en ese día, alineándose con el corte de tarjetas de crédito.
+    - Si hoy es 27 o posterior → ciclo desde el 27 de este mes.
+    - Si hoy es 1–26 → ciclo desde el 27 del mes anterior.
+
+    Ejemplo: 29/07 → 27/07; 10/08 → 27/07; 27/08 → 27/08.
     """
-    import holidays as holidays_lib  # importación diferida para no requerir en tests básicos
-
     if today is None:
         today = date.today()
+    if today.day >= CYCLE_START_DAY:
+        return today.replace(day=CYCLE_START_DAY)
+    # Mes anterior, día 27
+    first = today.replace(day=1)
+    prev_month_last = first - timedelta(days=1)
+    return prev_month_last.replace(day=CYCLE_START_DAY)
 
-    first_of_current = today.replace(day=1)
-    last_of_prev = first_of_current - timedelta(days=1)
-    cl_holidays = holidays_lib.CL(years=last_of_prev.year)
 
-    business_days = 0
-    current = last_of_prev
-    while current.month == last_of_prev.month:
-        if current.weekday() < 5 and current not in cl_holidays:
-            business_days += 1
-            if business_days == 2:
-                return current
-        current -= timedelta(days=1)
+def get_cycle_label(today: date | None = None) -> str:
+    """Nombre del mes del ciclo de facturación/gasto.
 
-    # Fallback improbable: si el mes anterior tuviera < 2 días hábiles
-    return last_of_prev.replace(day=1)
+    El ciclo que empieza el 27 de un mes se etiqueta con el **mes siguiente**
+    (ej. 27/jul–26/ago → “Agosto”). Así el “Total acumulado agosto” es legible.
+    """
+    start = get_cycle_start_date(today)
+    if start.month == 12:
+        return _MONTHS_ES[0]  # Enero
+    return _MONTHS_ES[start.month]  # mes siguiente (0-index: month es 1-based)
 
 
 def compute_content_hash(bank: str, date: str, amount: int, merchant: str) -> str:
