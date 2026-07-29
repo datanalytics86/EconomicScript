@@ -191,6 +191,157 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 </html>"""
 
 
+def _month_range(year: int, month: int, until: date) -> tuple[date, date]:
+    """Primer y último día del mes (acotado a until)."""
+    start = date(year, month, 1)
+    if month == 12:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, month + 1, 1) - timedelta(days=1)
+    if end > until:
+        end = until
+    return start, end
+
+
+def _build_digest_html(*, since: date, until: date) -> str:
+    """Digest tier 1: total del período, por mes y por categoría. Sin comercios."""
+    from utils import MONTHS_ES
+
+    conn = get_connection()
+    try:
+        all_groups = fetch_transactions_grouped(
+            conn, since=since, until=until, expenses_only=True, net_display=True
+        )
+        total_all = sum(g.total for g in all_groups)
+
+        month_rows: list[tuple[str, int]] = []
+        y, m = since.year, since.month
+        while date(y, m, 1) <= until:
+            m_start, m_end = _month_range(y, m, until)
+            if m_end >= since:
+                m_start = max(m_start, since)
+                groups = fetch_transactions_grouped(
+                    conn, since=m_start, until=m_end, expenses_only=True, net_display=True
+                )
+                month_rows.append((MONTHS_ES[m - 1], sum(g.total for g in groups)))
+            if m == 12:
+                y, m = y + 1, 1
+            else:
+                m += 1
+    finally:
+        conn.close()
+
+    # Barras por mes
+    max_m = max((t for _, t in month_rows if t > 0), default=1)
+    month_html_parts: list[str] = []
+    for name, total in month_rows:
+        if total <= 0:
+            continue
+        bar = min(100, max(3, int(round(total / max_m * 100))))
+        month_html_parts.append(
+            f"""
+<tr>
+  <td style="padding:8px 0 2px;font-size:14px;font-weight:600;color:#1c2833;">{name}</td>
+  <td style="padding:8px 0 2px;text-align:right;font-size:14px;font-weight:700;
+             color:#0e4d7b;">{_format_clp(total)}</td>
+</tr>
+<tr>
+  <td colspan="2" style="padding:0 0 8px;">
+    <div style="background:#eef2f6;border-radius:6px;height:10px;overflow:hidden;">
+      <div style="width:{bar}%;background:#1a6fa8;height:10px;border-radius:6px;"></div>
+    </div>
+  </td>
+</tr>"""
+        )
+
+    cat_block = _category_breakdown_html(
+        all_groups,
+        title="En qu&eacute; se ha gastado (todo el per&iacute;odo)",
+        empty="Sin gasto de consumo en el per&iacute;odo",
+    )
+    since_l = since.strftime("%d/%m/%Y")
+    until_l = until.strftime("%d/%m/%Y")
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body style="margin:0;padding:0;background:#f0f3f7;
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:480px;margin:0 auto;padding:24px 16px 40px;">
+
+    <div style="background:linear-gradient(145deg,#0e4d7b 0%,#1a6fa8 100%);
+                color:#fff;border-radius:16px;padding:22px;">
+      <div style="font-size:13px;opacity:0.85;">Digest &middot; una sola vez</div>
+      <div style="font-size:15px;margin-top:6px;opacity:0.95;">
+        {since_l} &rarr; {until_l}
+      </div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;
+                  opacity:0.8;margin-top:18px;">Total gastado</div>
+      <div style="font-size:32px;font-weight:700;letter-spacing:-0.02em;margin-top:4px;">
+        {_format_clp(total_all)}
+      </div>
+      <div style="font-size:12px;opacity:0.8;margin-top:6px;">
+        Consumo neto · sin transferencias ni pagos de tarjeta
+      </div>
+    </div>
+
+    <div style="background:#fff;border-radius:14px;padding:18px 20px;margin-top:14px;
+                box-shadow:0 1px 3px rgba(15,40,70,0.06);">
+      <div style="font-size:13px;font-weight:700;color:#0e4d7b;margin-bottom:8px;
+                  text-transform:uppercase;letter-spacing:0.04em;">Por mes</div>
+      <table style="width:100%;border-collapse:collapse;">
+        {''.join(month_html_parts) if month_html_parts else '<tr><td class="empty">Sin datos</td></tr>'}
+      </table>
+    </div>
+
+    <div style="background:#fff;border-radius:14px;padding:18px 20px;margin-top:14px;
+                box-shadow:0 1px 3px rgba(15,40,70,0.06);">
+      {cat_block}
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #eef1f5;
+                  font-size:13px;color:#5d6d7e;">
+        Total per&iacute;odo
+        <span style="float:right;font-size:18px;font-weight:700;color:#0e4d7b;">
+          {_format_clp(total_all)}
+        </span>
+      </div>
+    </div>
+
+    <p style="text-align:center;color:#a0aab4;font-size:11px;margin:20px 0 0;">
+      EconomicScript · digest hist&oacute;rico · no se repite autom&aacute;ticamente
+    </p>
+  </div>
+</body>
+</html>"""
+
+
+def _smtp_send(subject: str, html_body: str) -> None:
+    smtp_to = config.SMTP_TO
+    if not smtp_to:
+        LOGGER.warning("SMTP_TO no configurado — no se enviará el reporte.")
+        return
+    smtp_user = config.SMTP_USER or config.IMAP_USER
+    smtp_password = config.SMTP_PASSWORD
+    if not smtp_user or not smtp_password:
+        LOGGER.error("Credenciales SMTP no disponibles.")
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = smtp_user
+    msg["To"] = smtp_to
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, [smtp_to], msg.as_string())
+    LOGGER.info("Email enviado a %s — %s", smtp_to, subject)
+
+
 def send_daily_report(
     report_date: date | None = None,
     partial: bool = False,
@@ -199,23 +350,6 @@ def send_daily_report(
     """Genera y envía el reporte diario por email vía SMTP (Gmail TLS)."""
     if report_date is None:
         report_date = date.today() if partial else date.today() - timedelta(days=1)
-
-    smtp_to = config.SMTP_TO
-    if not smtp_to:
-        LOGGER.warning(
-            "SMTP_TO no configurado en .env — no se enviará el reporte. "
-            "Agrega SMTP_TO=tu_correo@gmail.com al archivo .env"
-        )
-        return
-
-    smtp_user = config.SMTP_USER or config.IMAP_USER
-    smtp_password = config.SMTP_PASSWORD
-    if not smtp_user or not smtp_password:
-        LOGGER.error(
-            "Credenciales SMTP no disponibles. "
-            "Configura SMTP_USER/SMTP_PASSWORD en .env (usa una App Password de Google)"
-        )
-        return
 
     html_body = _build_html_report(report_date, partial=partial)
     day_label = report_date.strftime("%d/%m/%Y")
@@ -227,19 +361,27 @@ def send_daily_report(
     else:
         subject_suffix = ""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[EconomicScript] {day_label} · {cycle_name}{subject_suffix}"
-    msg["From"] = smtp_user
-    msg["To"] = smtp_to
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
+    subject = f"[EconomicScript] {day_label} · {cycle_name}{subject_suffix}"
     try:
-        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, [smtp_to], msg.as_string())
-        LOGGER.info("Reporte del %s enviado a %s", day_label, smtp_to)
+        _smtp_send(subject, html_body)
+        LOGGER.info("Reporte del %s enviado", day_label)
     except Exception as exc:
         LOGGER.error("Error al enviar reporte del %s: %s", day_label, exc)
         raise
+
+
+def send_digest_report(
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> None:
+    """Envía un digest único (p. ej. desde enero del año en curso). No es periódico."""
+    until = until or date.today()
+    since = since or date(until.year, 1, 1)
+    html = _build_digest_html(since=since, until=until)
+    subject = (
+        f"[EconomicScript] Digest {since.strftime('%b %Y')}–{until.strftime('%b %Y')} "
+        f"· una sola vez"
+    )
+    _smtp_send(subject, html)
+    LOGGER.info("Digest %s → %s enviado", since.isoformat(), until.isoformat())

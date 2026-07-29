@@ -59,7 +59,7 @@ def parse_chilean_date(raw_date: str) -> datetime:
 # Día de corte del ciclo de gasto (ej. 27 → ciclo 27/jul–26/ago = “Agosto”)
 CYCLE_START_DAY: int = 27
 
-_MONTHS_ES: tuple[str, ...] = (
+MONTHS_ES: tuple[str, ...] = (
     "Enero",
     "Febrero",
     "Marzo",
@@ -101,8 +101,8 @@ def get_cycle_label(today: date | None = None) -> str:
     """
     start = get_cycle_start_date(today)
     if start.month == 12:
-        return _MONTHS_ES[0]  # Enero
-    return _MONTHS_ES[start.month]  # mes siguiente (0-index: month es 1-based)
+        return MONTHS_ES[0]  # Enero
+    return MONTHS_ES[start.month]  # mes siguiente (0-index: month es 1-based)
 
 
 def compute_content_hash(bank: str, date: str, amount: int, merchant: str) -> str:

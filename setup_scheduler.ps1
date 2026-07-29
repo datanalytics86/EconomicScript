@@ -3,10 +3,10 @@
     Registra las tareas automáticas de EconomicScript en el Programador de Windows.
 
 .DESCRIPTION
-    Crea tres tareas:
-    - EconomicScript-Poll    : cada 10 min, revisa Gmail y alerta al instante
-    - EconomicScript-Daily   : 07:00, reporte completo del día anterior (--yesterday)
-    - EconomicScript-Evening : 20:00, resumen parcial del día actual (--today)
+    Crea tareas:
+    - EconomicScript-Poll    : cada 10 min, revisa Gmail (sin alerta por TX por defecto)
+    - EconomicScript-Evening : 19:00, resumen tier-1 del día + acumulado del mes (--today)
+    - EconomicScript-Daily   : deshabilitada por defecto (usar solo 19:00)
 
 .NOTES
     Ejecutar como Administrador:
@@ -73,7 +73,22 @@ Register-ScheduledTask `
     -Force | Out-Null
 Write-Host "  OK  EconomicScript-Poll (cada $PollMinutes min)" -ForegroundColor Green
 
-# ── Daily 07:00 — reporte del día anterior ─────────────────────────────────────
+# ── Evening 19:00 — resumen del día + acumulado del mes (tier 1) ───────────────
+$ActionEvening = New-ScheduledTaskAction `
+    -Execute          "cmd.exe" `
+    -Argument         "/c `"$DailyCmd`" --today" `
+    -WorkingDirectory $ScriptDir
+
+Register-ScheduledTask `
+    -TaskName    "EconomicScript-Evening" `
+    -Action      $ActionEvening `
+    -Trigger     (New-ScheduledTaskTrigger -Daily -At "19:00") `
+    -Settings    $Settings `
+    -Description "19:00: ingesta + resumen tier-1 del dia y acumulado del mes (ciclo dia 27)." `
+    -Force | Out-Null
+Write-Host "  OK  EconomicScript-Evening (19:00 --today)" -ForegroundColor Green
+
+# ── Daily matutino: se deshabilita (un solo correo al día a las 19:00) ─────────
 $ActionDaily = New-ScheduledTaskAction `
     -Execute          "cmd.exe" `
     -Argument         "/c `"$DailyCmd`" --yesterday" `
@@ -84,24 +99,10 @@ Register-ScheduledTask `
     -Action      $ActionDaily `
     -Trigger     (New-ScheduledTaskTrigger -Daily -At "07:00") `
     -Settings    $Settings `
-    -Description "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior." `
+    -Description "Opcional: resumen de ayer a las 07:00. Deshabilitado por defecto." `
     -Force | Out-Null
-Write-Host "  OK  EconomicScript-Daily (07:00 --yesterday)" -ForegroundColor Green
-
-# ── Evening 20:00 — resumen parcial de hoy ─────────────────────────────────────
-$ActionEvening = New-ScheduledTaskAction `
-    -Execute          "cmd.exe" `
-    -Argument         "/c `"$DailyCmd`" --today" `
-    -WorkingDirectory $ScriptDir
-
-Register-ScheduledTask `
-    -TaskName    "EconomicScript-Evening" `
-    -Action      $ActionEvening `
-    -Trigger     (New-ScheduledTaskTrigger -Daily -At "20:00") `
-    -Settings    $Settings `
-    -Description "Envia resumen parcial de gastos del dia actual a las 20:00." `
-    -Force | Out-Null
-Write-Host "  OK  EconomicScript-Evening (20:00 --today)" -ForegroundColor Green
+Disable-ScheduledTask -TaskName "EconomicScript-Daily" -ErrorAction SilentlyContinue | Out-Null
+Write-Host "  OK  EconomicScript-Daily (07:00) DESHABILITADA (solo 19:00 activo)" -ForegroundColor Yellow
 
 Write-Host ""
 Write-Host "Tareas activas:"
@@ -110,7 +111,7 @@ Get-ScheduledTask | Where-Object { $_.TaskName -like 'EconomicScript*' } |
 
 Write-Host "Comandos utiles:"
 Write-Host "  Probar poll ahora  : Start-ScheduledTask -TaskName 'EconomicScript-Poll'"
-Write-Host "  Probar reporte     : Start-ScheduledTask -TaskName 'EconomicScript-Daily'"
+Write-Host "  Probar reporte 19h : Start-ScheduledTask -TaskName 'EconomicScript-Evening'"
 Write-Host "  Ver ultima ejecucion: Get-ScheduledTaskInfo -TaskName 'EconomicScript-Poll'"
 Write-Host ""
-Write-Host "Alertas instantaneas + reportes diarios → SMTP_TO en .env"
+Write-Host "Reportes diarios a las 19:00 -> SMTP_TO en .env"
