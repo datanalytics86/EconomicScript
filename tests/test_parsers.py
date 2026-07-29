@@ -344,6 +344,33 @@ def test_bci_can_parse_anulacion_subject() -> None:
     assert BCIParser().can_parse("contacto@bci.cl", "Notificación uso TDC", body)
 
 
+def test_bci_compra_no_habitual_iso_date() -> None:
+    """Alerta BCI 'compra no habitual': fecha ISO YYYY-MM-DD y etiquetas con dos puntos."""
+    parser = BCIParser()
+    body = (
+        "Hola\n"
+        "Nicolas Ignacio Sebastian\n"
+        "Hemos notado que se realizó un cargo en tu Tarjeta de Crédito Bci ****9406 "
+        "por un monto de $2.749 en PedidosYa*Plus.\n"
+        "Número tarjeta de Crédito:\n"
+        "****9406\n"
+        "Monto:\n"
+        "$2.749\n"
+        "Fecha:\n"
+        "2026-07-13\n"
+        "Hora:\n"
+        "10:45:11\n"
+        "Comercio:\n"
+        "PedidosYa*Plus\n"
+    )
+    assert parser.can_parse("contacto@bci.cl", "Aviso de compra no habitual", body)
+    tx = parser.parse(body, "bci_no_hab_1")
+    assert tx.type == "Compra TC"
+    assert tx.amount == 2749
+    assert "PedidosYa" in tx.merchant
+    assert tx.date.year == 2026 and tx.date.month == 7 and tx.date.day == 13
+
+
 # ─────────────────────────────────────────────
 # BancoEstado
 # ─────────────────────────────────────────────
@@ -618,6 +645,22 @@ def test_bancoestado_anulacion() -> None:
     assert tx.type == "Anulación TC"
     assert tx.amount == -5000
     assert "UBER" in tx.merchant.upper()
+
+
+def test_bancoestado_pago_compacto() -> None:
+    """Comprobante BE: Total pagado$X pegado a Fecha y horaDD/MM/YYYY."""
+    parser = BancoEstadoParser()
+    body = (
+        "Comprobante de pago\n"
+        "Nicolas, has realizado un pago de productos:\n"
+        "Total pagado$5.148\n"
+        "Cuenta de cargoCuenta Corriente ****0921\n"
+        "Fecha y hora12/07/2026 16:59\n"
+    )
+    tx = parser.parse(body, "be_pago_compact")
+    assert tx.type == "Pago Producto"
+    assert tx.amount == 5148
+    assert tx.date.day == 12 and tx.date.month == 7 and tx.date.year == 2026
 
 
 def test_security_anulacion() -> None:

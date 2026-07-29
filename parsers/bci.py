@@ -81,6 +81,17 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Transferencia entrante compacta:
+    # "Has recibido una transferencia de fondos de NOMBRE ... Monto recibido $150.000
+    #  Fecha de la transferencia\n22/07/2026"
+    _PATTERN_TRANSFER_INCOMING_RECIBIDO = re.compile(
+        r"Has\s+recibido\s+una\s+transferencia\s+de\s+fondos\s+de\s+(?P<merchant>.+?)"
+        r"(?:\s+hacia|\s+a\s+tu).*?"
+        r"Monto\s+recibido\s*\$?\s*(?P<amount>[\d\.,]+).*?"
+        r"Fecha\s+de\s+la\s+transferencia\s*\n?\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Comprobante de pago de tarjeta de crédito
     #   Monto pagado:\n$61,636\nTarjeta de crédito:\n****6326\nFecha:\n27/04/23
     _PATTERN_PAGO_TC = re.compile(
@@ -101,11 +112,15 @@ class BCIParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Fecha CL (DD/MM/YYYY) o ISO (YYYY-MM-DD) — alertas "compra no habitual" usan ISO
+    _DATE = r"(?P<date>\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})"
+
     # Layout moderno (etiqueta sola en su línea, valor en la siguiente):
     #   Monto\n$12.199\nFecha\n04/03/2026\nHora\nHH:MM horas\nComercio\nNOMBRE
+    #   Monto:\n$2.749\nFecha:\n2026-07-13\nComercio:\nPedidosYa*Plus  (no habitual)
     _PATTERN_TC_LABEL = re.compile(
-        r"Monto\s*\n\s*\$(?P<amount>[\d\.]+).*?"
-        r"Fecha\s*\n\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        r"Monto\s*:?\s*\n\s*\$(?P<amount>[\d\.]+).*?"
+        rf"Fecha\s*:?\s*\n\s*{_DATE}.*?"
         r"Comercio\s*(?::?\s*|\n\s*)(?P<merchant>[^\n]+)",
         re.IGNORECASE | re.DOTALL,
     )
@@ -113,7 +128,7 @@ class BCIParser(BankParser):
     #   Hora 13:43 horas\nDP *FALABELLA.COM\nComercio\nSANTIAGO CL
     _PATTERN_TC_PRE = re.compile(
         r"Monto\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
-        r"Fecha\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        rf"Fecha\s*:?\s*{_DATE}.*?"
         r"Hora\s+[^\n]+\s*\n\s*(?P<merchant>[^\n]+)\s*\n\s*Comercio",
         re.IGNORECASE | re.DOTALL,
     )
@@ -121,7 +136,7 @@ class BCIParser(BankParser):
     #   Comercio DP *FALABELLA.COM SANTIAGO CL  /  Comercio: LIDER EXPRESS 1234
     _PATTERN_TC_POST = re.compile(
         r"Monto\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
-        r"Fecha\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4}).*?"
+        rf"Fecha\s*:?\s*{_DATE}.*?"
         r"Comercio\s*:?\s*(?P<merchant>[^\n]+)",
         re.IGNORECASE | re.DOTALL,
     )
@@ -155,6 +170,8 @@ class BCIParser(BankParser):
         return (
             "notificación" in subject_l
             or "aviso de transferencia" in subject_l
+            or "aviso de compra" in subject_l
+            or "compra no habitual" in subject_l
             or "transacción" in body_l
             or "transferencia de fondos" in body_l
             or "realizaste una compra" in body_l
@@ -191,6 +208,21 @@ class BCIParser(BankParser):
                 amount=normalize_clp_amount(match.group("amount")),
                 type="Transferencia Entrante",
                 merchant=match.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # Transferencia entrante compacta (Monto recibido + Fecha de la transferencia)
+        match = self._PATTERN_TRANSFER_INCOMING_RECIBIDO.search(body)
+        if match:
+            merchant = re.sub(r"\s+", " ", match.group("merchant")).strip()
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(match.group("date")),
+                amount=normalize_clp_amount(match.group("amount")),
+                type="Transferencia Entrante",
+                merchant=merchant,
                 source="gmail",
                 raw_text=body,
                 gmail_message_id=gmail_message_id,

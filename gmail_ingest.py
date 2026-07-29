@@ -41,6 +41,8 @@ _SKIP_SUBJECT_KEYWORDS = (
     "promoción",
     "cuotas sin interés",
     "cuotas sin interes",
+    "toma el control de tu seguridad",
+    "seguridad digital",
 )
 _SKIP_BODY_KEYWORDS = (
     "accediste a visualizar los datos de tu tarjeta",
@@ -219,10 +221,14 @@ class GmailIngestor:
                         self._ensure_processed_folder(mail)
 
                 except Exception as exc:  # noqa: BLE001
-                    LOGGER.exception("Error procesando mensaje %s: %s", uid, exc)
+                    err = str(exc)
+                    # Fallos de parseo esperados: warning corto (sin stack trace ruidoso)
+                    if isinstance(exc, ValueError) and "parsear" in err.lower():
+                        LOGGER.warning("No parseable UID %s: %s | %s", uid_str, err, (subject or "")[:80])
+                    else:
+                        LOGGER.exception("Error procesando mensaje %s: %s", uid, exc)
                     summary["failed"] += 1
                     # No guardar errores de socket sin body (contaminan unprocessed)
-                    err = str(exc)
                     if body or "socket" not in err.lower():
                         self.db.save_unprocessed_email(uid_str, sender, subject, body, err)
                 finally:
@@ -261,6 +267,9 @@ class GmailIngestor:
         """Detecta correos bancarios que no son transacciones (marketing, seguridad, etc.)."""
         sender_l = sender.lower()
         if "marketingbanco@" in sender_l or "asistencia.preferencial@" in sender_l:
+            return True
+        # Newsletters / marketing BCI (no son notificaciones de cargo)
+        if "comunicaciones@info.bci.cl" in sender_l or "@info.bci.cl" in sender_l:
             return True
         if subject.lower().startswith("re:"):
             return True

@@ -18,6 +18,9 @@ DATE_FORMATS = (
     # Formato corto usado en EECC bancarios (ej: 30/01/26 → 30/01/2026)
     "%d/%m/%y",
     "%d-%m-%y",
+    # ISO usado en alertas BCI "compra no habitual"
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
 )
 
 

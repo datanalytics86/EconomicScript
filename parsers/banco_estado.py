@@ -18,10 +18,11 @@ Formatos reales observados en muestras:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from models import TransactionRecord
 from parsers.base import BankParser
-from utils import normalize_clp_amount, parse_chilean_date
+from utils import SANTIAGO_TZ, normalize_clp_amount, parse_chilean_date
 
 
 class BancoEstadoParser(BankParser):
@@ -35,6 +36,14 @@ class BancoEstadoParser(BankParser):
     _PATTERN_COMPRA = re.compile(
         r"compra\s+por\s+\$\s*(?P<amount>[\d\.]+)\s+en\s+(?P<merchant>.+?)"
         r"(?:\s+asociado.*?)?\s+el\s+d[ií]a\s+(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    # Cobro pasaje QR RED: "cobro por $895 en tu cuenta ... Pasaje QR"
+    # Muchos mails no traen fecha en el body → fallback a "hoy" (America/Santiago).
+    _PATTERN_COBRO_PASAJE = re.compile(
+        r"cobro\s+por\s+\$\s*(?P<amount>[\d\.]+)\s+en\s+tu\s+cuenta"
+        r".*?(?:Pasaje\s*QR|viajes\s+pagados\s+con\s+Pasaje)",
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -57,6 +66,15 @@ class BancoEstadoParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # TEF comprobante (orden real varía: a veces Fecha antes de Nombre/Hacia)
+    # Monto transferido:\n $20.000 ... Fecha y Hora de TEF:24/07/2026 ... Nombre:Lidia
+    _PATTERN_TEF = re.compile(
+        r"Monto\s+transferido\s*:?\s*\$?\s*(?P<amount>[\d\.,]+).*?"
+        r"Fecha\s+y\s+[Hh]ora(?:\s+de\s+TEF)?\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4})"
+        r"(?:.*?Nombre\s*:?\s*(?P<merchant>[^\n\r]+))?",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Compra en moneda extranjera (CAD, USD, EUR, etc.) con layout multilinea
     #   "compra por CAD\n137,43\n en\nPHARMAPRIX 42\n...el día\n20/06/2023"
     _PATTERN_COMPRA_FX = re.compile(
@@ -72,6 +90,14 @@ class BancoEstadoParser(BankParser):
         r"pago de producto.*?"
         r"Producto\s*:?\s*(?P<merchant>[^\n]+).*?"
         r"Monto pagado\s*:?\s*\$?(?P<amount>[\d\.]+).*?"
+        r"Fecha\s*y\s*hora\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    # Comprobante compacto: "Total pagado$5.148 ... Fecha y hora12/07/2026 16:59"
+    # (sin espacios entre etiqueta y valor; sin campo Producto)
+    _PATTERN_PAGO_COMPACT = re.compile(
+        r"(?:Total\s*pagado|Monto\s*pagado)\s*\$?\s*(?P<amount>[\d\.,]+).*?"
         r"Fecha\s*y\s*hora\s*:?\s*(?P<date>\d{2}/\d{2}/\d{4})",
         re.IGNORECASE | re.DOTALL,
     )
@@ -104,6 +130,9 @@ class BancoEstadoParser(BankParser):
             "reverso",
             "devolución",
             "devolucion",
+            "cobro",
+            "pasaje",
+            "tef",
         )
         return any(kw in text for kw in tx_keywords)
 
@@ -166,7 +195,36 @@ class BancoEstadoParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # 3. Transferencia (formato campo-por-línea real)
+        # 2b. Comprobante de pago compacto (sin campo Producto)
+        m = self._PATTERN_PAGO_COMPACT.search(body)
+        if m and ("pago de producto" in body.lower() or "total pagado" in body.lower()):
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=normalize_clp_amount(m.group("amount")),
+                type="Pago Producto",
+                merchant="Pago producto BancoEstado",
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 3. TEF comprobante (envío/recepción) — antes del transfer genérico
+        m = self._PATTERN_TEF.search(body)
+        if m:
+            merchant = (m.group("merchant") or "Transferencia BancoEstado").strip()
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=normalize_clp_amount(m.group("amount")),
+                type="Transferencia",
+                merchant=merchant,
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 3b. Transferencia (formato campo-por-línea real)
         m = self._PATTERN_TRANSFER.search(body)
         if m:
             return TransactionRecord(
@@ -175,6 +233,27 @@ class BancoEstadoParser(BankParser):
                 amount=normalize_clp_amount(m.group("amount")),
                 type="Transferencia",
                 merchant=m.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
+        # 3c. Cobro pasaje QR RED (débito cuenta corriente; gasto de consumo)
+        m = self._PATTERN_COBRO_PASAJE.search(body)
+        if m:
+            # Preferir cualquier fecha DD/MM/YYYY presente; si no, hoy (mail suele ser D+1)
+            date_m = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", body)
+            tx_date = (
+                parse_chilean_date(date_m.group(1))
+                if date_m
+                else datetime.now(tz=SANTIAGO_TZ)
+            )
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=tx_date,
+                amount=normalize_clp_amount(m.group("amount")),
+                type="Compra TC",
+                merchant="Pasaje QR RED BancoEstado",
                 source="gmail",
                 raw_text=body,
                 gmail_message_id=gmail_message_id,
