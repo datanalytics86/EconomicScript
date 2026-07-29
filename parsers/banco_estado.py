@@ -38,6 +38,14 @@ class BancoEstadoParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Anulación / reverso TC (misma estructura que compra)
+    # "Se ha realizado una anulación por $ X en MERCHANT ... el día DD/MM/YYYY"
+    _PATTERN_ANULACION = re.compile(
+        r"(?:anulaci[oó]n|reverso|devoluci[oó]n)\s+por\s+\$\s*(?P<amount>[\d\.]+)\s+en\s+"
+        r"(?P<merchant>.+?)(?:\s+asociado.*?)?\s+el\s+d[ií]a\s+(?P<date>\d{2}/\d{2}/\d{4})",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Transferencia (saliente o entrante)
     # Dos layouts reales:
     #   Con espacios: "Monto $1.200.000 \n Para Nicolas Andrade \n ... 27/02/2026"
@@ -91,10 +99,29 @@ class BancoEstadoParser(BankParser):
             "abono",
             "recibiste",
             "realizaste",
+            "anulación",
+            "anulacion",
+            "reverso",
+            "devolución",
+            "devolucion",
         )
         return any(kw in text for kw in tx_keywords)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
+        # 0. Anulación / reverso TC — prioriza sobre compra
+        m = self._PATTERN_ANULACION.search(body)
+        if m:
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=-abs(normalize_clp_amount(m.group("amount"))),
+                type="Anulación TC",
+                merchant=m.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
         # 1. Compra TC en moneda extranjera (CAD/USD/EUR) — layout multilinea
         m = self._PATTERN_COMPRA_FX.search(body)
         if m:

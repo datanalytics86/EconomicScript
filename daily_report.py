@@ -11,14 +11,14 @@ from email.mime.text import MIMEText
 
 import config
 from report_utils import build_category_groups_html, fetch_transactions_grouped, get_connection
-from utils import get_cycle_start_date
+from utils import CONSUMPTION_SQL_FILTER, format_clp, get_cycle_start_date
 
 LOGGER = logging.getLogger(__name__)
 
 
 def _format_clp(amount: int) -> str:
-    """Formatea monto CLP con separadores de miles estilo chileno."""
-    return f"${abs(amount):,.0f}".replace(",", ".")
+    """Formatea monto CLP con signo y separadores de miles estilo chileno."""
+    return format_clp(amount)
 
 
 def _build_html_report(report_date: date, partial: bool = False) -> str:
@@ -38,6 +38,15 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         day_rows = [r for g in day_groups for r in g.transactions]
         cycle_rows = [{"category": g.category, "total": g.total} for g in cycle_groups]
 
+        # Conteo bruto de movimientos del día (cualquier tipo) para detectar huecos de ingesta
+        day_all_count = conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE DATE(date) = ?",
+            (report_date.isoformat(),),
+        ).fetchone()[0]
+        unprocessed_count = int(
+            conn.execute("SELECT COUNT(*) FROM unprocessed_emails").fetchone()[0]
+        )
+
         day_by_category_html = build_category_groups_html(
             day_groups,
             title=f"Gastos del {report_date.strftime('%d/%m/%Y')} por categor\u00eda",
@@ -49,18 +58,30 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
             empty_message="Sin gastos en el ciclo",
         )
 
-        # Gasto diario de los últimos 10 días (solo compras/débitos)
+        # Gasto diario de los últimos 10 días (consumo neto: compras + anulaciones)
         last10_rows = conn.execute(
-            """
-            SELECT DATE(t.date) AS day, SUM(t.amount) AS total
+            f"""
+            SELECT DATE(t.date) AS day, SUM(t.amount) AS total, COUNT(*) AS n
             FROM transactions t
-            WHERE DATE(t.date) > DATE(?, '-10 days') AND t.amount > 0
-              AND t.type NOT LIKE 'Transferencia%'
+            WHERE DATE(t.date) > DATE(?, '-10 days') AND DATE(t.date) <= ?
+              AND ({CONSUMPTION_SQL_FILTER})
             GROUP BY day
             ORDER BY day DESC
             """,
-            (report_date.isoformat(),),
+            (report_date.isoformat(), report_date.isoformat()),
         ).fetchall()
+        last10_counts = {
+            r["day"]: r["n"]
+            for r in conn.execute(
+                """
+                SELECT DATE(date) AS day, COUNT(*) AS n
+                FROM transactions
+                WHERE DATE(date) > DATE(?, '-10 days') AND DATE(date) <= ?
+                GROUP BY day
+                """,
+                (report_date.isoformat(), report_date.isoformat()),
+            ).fetchall()
+        }
     finally:
         conn.close()
 
@@ -75,12 +96,35 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
         else f"Resumen financiero &mdash; {day_label}"
     )
 
+    ingest_warning = ""
+    if day_all_count == 0:
+        ingest_warning = (
+            '<p style="padding:12px;background:#fff3cd;border-left:4px solid #e67e22;'
+            'border-radius:4px;color:#7d6608;">'
+            f"<b>⚠ 0 movimientos ingestados este d&iacute;a ({day_label})</b> — "
+            "revisa ingesta Gmail / unprocessed_emails / logs del job diario."
+            "</p>"
+        )
 
-    last10_map = {r['day']: r['total'] for r in last10_rows}
+    unprocessed_note = (
+        f'<p style="color:#888;font-size:12px;">Correos en unprocessed_emails: '
+        f"<b>{unprocessed_count}</b></p>"
+        if unprocessed_count
+        else ""
+    )
+
+    last10_map = {r["day"]: r["total"] for r in last10_rows}
     last10_days = [report_date - timedelta(days=i) for i in range(10)]
     last10_rows_html = "\n".join(
-        f"<tr><td>{d.strftime('%d/%m/%Y')}</td>"
-        f"<td class='num'>{_format_clp(last10_map.get(d.isoformat(), 0))}</td></tr>"
+        (
+            f"<tr><td>{d.strftime('%d/%m/%Y')}</td>"
+            f"<td class='num'>{_format_clp(last10_map.get(d.isoformat(), 0))}</td>"
+            f"<td class='warn'>0 mov. ingestados — revisa ingesta</td></tr>"
+            if last10_counts.get(d.isoformat(), 0) == 0
+            else f"<tr><td>{d.strftime('%d/%m/%Y')}</td>"
+            f"<td class='num'>{_format_clp(last10_map.get(d.isoformat(), 0))}</td>"
+            f"<td class='num' style='color:#888'>{last10_counts.get(d.isoformat(), 0)} mov.</td></tr>"
+        )
         for d in last10_days
     )
 
@@ -97,6 +141,7 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
     th   {{ background: #1a5276; color: #fff; padding: 8px 12px; text-align: left; }}
     td   {{ padding: 7px 12px; border-bottom: 1px solid #e8e8e8; }}
     .num  {{ text-align: right; }}
+    .warn {{ color: #c0392b; font-size: 12px; font-style: italic; }}
     .total-row td {{ font-weight: bold; background: #eaf2fb; }}
     .empty {{ text-align: center; color: #888; font-style: italic; }}
     .footer {{ margin-top: 32px; color: #aaa; font-size: 11px; }}
@@ -110,10 +155,13 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 <body>
   <h2>{h2_title}</h2>
 
+  {ingest_warning}
+
   {day_by_category_html}
 
   <p class="total-row" style="padding:10px 12px;background:#eaf2fb;border-radius:4px;">
     <b>Total del d&iacute;a: {_format_clp(total_day)}</b>
+    <span style="color:#888;font-weight:normal;"> ({day_all_count} mov. en BD)</span>
   </p>
 
   <hr style="margin:32px 0;border:none;border-top:2px solid #e0e0e0;">
@@ -126,9 +174,11 @@ def _build_html_report(report_date: date, partial: bool = False) -> str:
 
   <h3>Gasto diario &mdash; &uacute;ltimos 10 d&iacute;as</h3>
   <table>
-    <tr><th>D&iacute;a</th><th>Total gastado</th></tr>
+    <tr><th>D&iacute;a</th><th>Total gastado</th><th>Estado ingesta</th></tr>
     {last10_rows_html}
   </table>
+
+  {unprocessed_note}
 
   <p class="footer">Generado autom&aacute;ticamente por EconomicScript &middot; {day_label}</p>
 </body>

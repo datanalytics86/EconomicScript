@@ -69,6 +69,26 @@ def _filter_today_ids(conn: sqlite3.Connection, ids: list[int]) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def _filter_alertable_ids(conn: sqlite3.Connection, ids: list[int]) -> list[int]:
+    """Excluye anulaciones/reversos y movimientos no-consumo del spam de alertas."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT id FROM transactions
+        WHERE id IN ({placeholders})
+          AND type NOT IN ('Anulación TC', 'Reverso TC')
+          AND type NOT LIKE 'Transferencia%'
+          AND type NOT LIKE 'Pago TC%'
+          AND type NOT LIKE 'Pago Producto%'
+        ORDER BY id
+        """,
+        ids,
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 class _PollLock:
     """Evita ejecuciones concurrentes del poll (Task Scheduler + manual)."""
 
@@ -129,7 +149,8 @@ def _run_locked() -> None:
 
     LOGGER.info(
         "Ingesta → encontrados: %(found)s | procesados: %(processed)s | "
-        "guardados: %(saved)s | fallidos: %(failed)s | omitidos: %(skipped)s",
+        "guardados: %(saved)s | fallidos: %(failed)s | omitidos: %(skipped)s | "
+        "duplicados: %(duplicates)s",
         summary,
     )
 
@@ -142,16 +163,24 @@ def _run_locked() -> None:
         LOGGER.info("Auto-categorizadas: %d", n)
 
         new_ids = _get_new_transaction_ids(conn, max_id_before)
-        if not new_ids:
-            alert_ids: list[int] = []
+        # Alertas desactivadas por defecto (INSTANT_ALERTS_ENABLED=false).
+        # Nunca alertar por Anulación TC (ruido de preauth Uber/estacionamientos).
+        alert_ids: list[int] = []
+        if not getattr(config, "INSTANT_ALERTS_ENABLED", False):
+            LOGGER.info(
+                "Alertas instantáneas desactivadas (INSTANT_ALERTS_ENABLED=false) — "
+                "%d TX nuevas sin email por transacción",
+                len(new_ids),
+            )
+        elif not new_ids:
+            pass
         elif summary["found"] > _BACKLOG_THRESHOLD:
-            alert_ids = []
             LOGGER.info(
                 "Backlog detectado (%d correos) — transacciones guardadas sin alerta masiva",
                 summary["found"],
             )
         else:
-            alert_ids = _filter_today_ids(conn, new_ids)
+            alert_ids = _filter_alertable_ids(conn, _filter_today_ids(conn, new_ids))
     finally:
         conn.close()
 
@@ -160,9 +189,9 @@ def _run_locked() -> None:
     elif alert_ids:
         LOGGER.info("Enviando alerta instantánea (%d transacciones de hoy)", len(alert_ids))
         send_instant_alert(alert_ids)
-    elif summary["found"] <= _BACKLOG_THRESHOLD:
+    elif getattr(config, "INSTANT_ALERTS_ENABLED", False) and summary["found"] <= _BACKLOG_THRESHOLD:
         LOGGER.info(
-            "Transacciones nuevas (%d) pero ninguna es de hoy — sin alerta",
+            "Transacciones nuevas (%d) pero ninguna alertable de hoy — sin alerta",
             len(new_ids),
         )
 

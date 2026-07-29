@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import config
+from utils import CONSUMPTION_SQL_FILTER, format_clp
 
 UNCATEGORIZED_LABEL = "Sin categoría"
 
@@ -20,7 +21,7 @@ class CategoryGroup:
 
 
 def _format_clp(amount: int) -> str:
-    return f"${abs(amount):,.0f}".replace(",", ".")
+    return format_clp(amount)
 
 
 def fetch_transactions_grouped(
@@ -30,7 +31,13 @@ def fetch_transactions_grouped(
     until: date | None = None,
     expenses_only: bool = True,
 ) -> list[CategoryGroup]:
-    """Obtiene transacciones agrupadas por categoría, ordenadas por total descendente."""
+    """Obtiene transacciones agrupadas por categoría, ordenadas por total descendente.
+
+    Si expenses_only=True (default), filtra **gasto de consumo neto**:
+    - Incluye Compra TC, Compra TC FX y Anulación TC (amount < 0).
+    - Excluye transferencias y pagos de tarjeta.
+    - Suma amount (así provisorio + anulación se cancelan y queda el cargo final).
+    """
     filters: list[str] = []
     params: list[str] = []
 
@@ -41,7 +48,8 @@ def fetch_transactions_grouped(
         filters.append("DATE(t.date) <= ?")
         params.append(until.isoformat())
     if expenses_only:
-        filters.append("t.amount > 0")
+        # No filtrar amount > 0: las anulaciones (negativas) deben netear el total
+        filters.append(f"({CONSUMPTION_SQL_FILTER})")
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
 

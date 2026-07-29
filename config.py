@@ -26,6 +26,11 @@ OAUTH_CLIENT_SECRET: str = os.getenv("OAUTH_CLIENT_SECRET", "")
 OAUTH_REFRESH_TOKEN: str = os.getenv("OAUTH_REFRESH_TOKEN", "")
 # Máximo de correos a leer por ejecución (evita OOM con inbox grande)
 GMAIL_MAX_RESULTS: int = int(os.getenv("GMAIL_MAX_RESULTS", "500"))
+# Días hacia atrás a revisar en la corrida diaria (leídos y no leídos).
+# 0 = solo UNSEEN. >=1 usa SINCE y deduplica por gmail_message_id.
+# Mitiga correos abiertos en el móvil antes de que corra el job y huecos
+# si el PC/scheduler estuvo apagado varios días. 7 es un default seguro.
+GMAIL_LOOKBACK_DAYS: int = int(os.getenv("GMAIL_LOOKBACK_DAYS", "7"))
 
 # ── Reconciliación ─────────────────────────────────────────────────────────────
 # Días de tolerancia para cruzar fecha Gmail vs cartola (cargos pueden debitarse al día siguiente)
@@ -52,6 +57,13 @@ SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
 # Usuario/contraseña SMTP (por defecto usa las mismas credenciales que IMAP)
 SMTP_USER: str = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+
+# ── Alertas instantáneas (poll) ───────────────────────────────────────────────
+# False por defecto: el usuario no quiere un email por cada transacción.
+# El reporte diario/parcial cubre el resumen. Poner true solo si se desea alertas.
+INSTANT_ALERTS_ENABLED: bool = os.getenv(
+    "INSTANT_ALERTS_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

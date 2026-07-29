@@ -105,7 +105,6 @@ class GmailIngestor:
 
             self._ensure_processed_folder(mail)
 
-            parsed_transactions: list[TransactionRecord] = []
             summary = {
                 "found": len(uids),
                 "processed": 0,
@@ -113,15 +112,47 @@ class GmailIngestor:
                 "failed": 0,
                 "saved": 0,
                 "skipped": 0,
+                "duplicates": 0,
             }
+
+            # Evita re-fetch y re-copias IMAP de mensajes ya persistidos (lookback / backfill)
+            uid_ids = [u.decode() for u in uids]
+            already_saved = self.db.known_gmail_ids(uid_ids)
+            if already_saved:
+                LOGGER.info(
+                    "Omitiendo %s correos ya presentes en BD (dedup por gmail_message_id)",
+                    len(already_saved),
+                )
 
             if progress_callback and uids:
                 progress_callback(0, len(uids), f"Encontrados {len(uids)} correos. Iniciando procesamiento…")
 
             for i, uid in enumerate(uids):
                 sender = subject = body = ""
+                uid_str = uid.decode()
                 try:
-                    _, data = mail.uid("fetch", uid, "(RFC822)")
+                    if uid_str in already_saved:
+                        summary["duplicates"] += 1
+                        continue
+
+                    try:
+                        _, data = mail.uid("fetch", uid, "(RFC822)")
+                    except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError) as conn_exc:
+                        LOGGER.warning(
+                            "IMAP caído al fetch %s (%s) — reconectando…", uid_str, conn_exc
+                        )
+                        try:
+                            mail.logout()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        mail = self._connect()
+                        mail.select("INBOX")
+                        self._ensure_processed_folder(mail)
+                        _, data = mail.uid("fetch", uid, "(RFC822)")
+
+                    if not data or not data[0] or data[0] is None:
+                        raise ValueError(f"Fetch vacío para UID {uid_str}")
+
                     raw_email = data[0][1]
                     msg = email.message_from_bytes(raw_email)
                     sender = msg.get("From", "")
@@ -145,22 +176,55 @@ class GmailIngestor:
                         if self._looks_like_transaction(subject, body):
                             summary["no_parser"] += 1
                             self.db.save_unprocessed_email(
-                                uid.decode(), sender, subject, body, "Sin parser compatible"
+                                uid_str, sender, subject, body, "Sin parser compatible"
                             )
                         else:
                             self._mark_as_processed(mail, uid)
                             summary["skipped"] += 1
                         continue
-                    else:
-                        transaction = parser.parse(body=body, gmail_message_id=uid.decode())
-                        parsed_transactions.append(transaction)
-                        self._mark_as_processed(mail, uid)
+
+                    transaction = parser.parse(body=body, gmail_message_id=uid_str)
+                    # Guardar ANTES de marcar como leído: si cae la conexión, el correo
+                    # sigue disponible y se reintenta en la próxima corrida.
+                    inserted = self.db.insert_transaction(transaction)
+                    if inserted:
+                        summary["saved"] += 1
                         summary["processed"] += 1
+                        already_saved.add(uid_str)
+                        LOGGER.info(
+                            "TX nueva %s | %s | %s | $%s | %s",
+                            transaction.date.strftime("%Y-%m-%d"),
+                            transaction.bank,
+                            transaction.type,
+                            f"{transaction.amount:,}".replace(",", "."),
+                            (transaction.merchant or "")[:60],
+                        )
+                    else:
+                        summary["duplicates"] += 1
+                        already_saved.add(uid_str)
+                    try:
+                        self._mark_as_processed(mail, uid)
+                    except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError) as mark_exc:
+                        LOGGER.warning(
+                            "No se pudo marcar UID %s como procesado (%s); ya está en BD",
+                            uid_str,
+                            mark_exc,
+                        )
+                        try:
+                            mail.logout()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        mail = self._connect()
+                        mail.select("INBOX")
+                        self._ensure_processed_folder(mail)
 
                 except Exception as exc:  # noqa: BLE001
                     LOGGER.exception("Error procesando mensaje %s: %s", uid, exc)
                     summary["failed"] += 1
-                    self.db.save_unprocessed_email(uid.decode(), sender, subject, body, str(exc))
+                    # No guardar errores de socket sin body (contaminan unprocessed)
+                    err = str(exc)
+                    if body or "socket" not in err.lower():
+                        self.db.save_unprocessed_email(uid_str, sender, subject, body, err)
                 finally:
                     if progress_callback:
                         try:
@@ -172,16 +236,17 @@ class GmailIngestor:
                         except Exception:  # noqa: BLE001
                             pass  # nunca dejar que la UI detenga el loop
 
-            summary["saved"] = self.db.insert_transactions(parsed_transactions)
             LOGGER.info(
                 "Ingesta completada — encontrados: %s | procesados: %s | "
-                "omitidos: %s | sin parser: %s | fallidos: %s | guardados: %s",
+                "omitidos: %s | sin parser: %s | fallidos: %s | guardados: %s | "
+                "duplicados: %s",
                 summary["found"],
                 summary["processed"],
                 summary["skipped"],
                 summary["no_parser"],
                 summary["failed"],
                 summary["saved"],
+                summary["duplicates"],
             )
             return summary
         finally:
@@ -225,6 +290,11 @@ class GmailIngestor:
             "transaccion",
             "tarjeta de crédito",
             "tarjeta de credito",
+            "anulación",
+            "anulacion",
+            "reverso",
+            "devolución",
+            "devolucion",
         )
         return any(kw in text for kw in keywords)
 
@@ -237,8 +307,12 @@ class GmailIngestor:
         Si es None usa UNSEEN (solo correos nuevos — modo diario normal).
         """
         if since_date is not None:
-            # Formato IMAP: DD-Mon-YYYY, ej: "24-Feb-2026"
-            imap_date = since_date.strftime("%d-%b-%Y")
+            # Formato IMAP siempre en inglés (evita locale ES: "jul." inválido)
+            _months = (
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            )
+            imap_date = f"{since_date.day:02d}-{_months[since_date.month - 1]}-{since_date.year}"
             criteria_prefix = f'(SINCE "{imap_date}"'
         else:
             criteria_prefix = "(UNSEEN"

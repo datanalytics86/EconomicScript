@@ -33,7 +33,15 @@ function Resolve-PythonExe {
 
 $PythonExe = Resolve-PythonExe
 $Script = $args[0]
-$ScriptArgs = $args[1..($args.Length - 1)]
+
+# IMPORTANTE: no usar $args[1..($args.Length-1)] cuando Length==1.
+# En PowerShell, el rango reverso [1..0] devuelve el elemento 0 otra vez
+# (p.ej. "run_daily.py"), y Python falla con exit code 2.
+if ($args.Count -gt 1) {
+    $ScriptArgs = $args[1..($args.Count - 1)]
+} else {
+    $ScriptArgs = @()
+}
 
 if (-not $Script) {
     Write-Error "Uso: run_task.ps1 <script.py> [argumentos...]"

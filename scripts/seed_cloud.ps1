@@ -30,8 +30,9 @@ if (-not $repo) {
     $repo = gh repo view --json nameWithOwner -q .nameWithOwner
 }
 
+$sizeKb = [math]::Round((Get-Item $DbPath).Length / 1024, 1)
 Write-Host "Repositorio: $repo"
-Write-Host "BD local: $DbPath ($((Get-Item $DbPath).Length / 1KB) KB)"
+Write-Host "BD local: $DbPath ($sizeKb KB)"
 Write-Host ""
 Write-Host "Dispara el workflow 'Seed Database' y luego sube la BD..."
 Write-Host ""

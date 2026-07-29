@@ -18,7 +18,7 @@ from categorizer import assign_category_and_learn, auto_categorize
 from db import Database, get_or_create_category, get_transactions_for_export
 from gmail_ingest import GmailIngestor
 from statement_parser import StatementParser
-from utils import get_cycle_start_date
+from utils import format_clp, get_cycle_start_date, is_consumption_type
 
 
 @contextmanager
@@ -42,6 +42,19 @@ def _load_transactions(conn: sqlite3.Connection) -> pd.DataFrame:
         """,
         conn,
     )
+
+
+def _filter_real_expenses(df: pd.DataFrame) -> pd.DataFrame:
+    """Gasto de consumo neto: compras + anulaciones (amount < 0); sin transferencias/pagos TC.
+
+    Las anulaciones **sí entran** (monto negativo) para netear preautorizaciones.
+    No filtrar por amount > 0.
+    """
+    if df.empty:
+        return df.copy()
+    if "type" not in df.columns:
+        return df.copy()
+    return df[df["type"].map(is_consumption_type)].copy()
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -82,19 +95,21 @@ def _render_kpis(df: pd.DataFrame) -> None:
         cycle_start - timedelta(days=1)  # un día antes del ciclo → mes anterior
     )
 
-    # Solo gastos (amount > 0); abonos/devoluciones tienen amount < 0
-    gastos = df[df["amount"] > 0]
+    # Gasto de consumo neto vía _filter_real_expenses (incluye Anulación TC negativa).
+    gastos = _filter_real_expenses(df)
 
-    gasto_hoy = gastos[gastos["date"].dt.date == today]["amount"].sum()
+    gasto_hoy = int(gastos[gastos["date"].dt.date == today]["amount"].sum())
 
-    gasto_ciclo = gastos[gastos["date"].dt.date >= cycle_start]["amount"].sum()
+    gasto_ciclo = int(gastos[gastos["date"].dt.date >= cycle_start]["amount"].sum())
 
     days_elapsed = (today - cycle_start).days
     prev_cycle_end = prev_cycle_start + timedelta(days=days_elapsed)
-    gasto_ciclo_anterior = gastos[
-        (gastos["date"].dt.date >= prev_cycle_start)
-        & (gastos["date"].dt.date <= prev_cycle_end)
-    ]["amount"].sum()
+    gasto_ciclo_anterior = int(
+        gastos[
+            (gastos["date"].dt.date >= prev_cycle_start)
+            & (gastos["date"].dt.date <= prev_cycle_end)
+        ]["amount"].sum()
+    )
 
     variacion = (
         (gasto_ciclo - gasto_ciclo_anterior) / gasto_ciclo_anterior * 100
@@ -103,11 +118,14 @@ def _render_kpis(df: pd.DataFrame) -> None:
     )
 
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Gasto total hoy", f"${gasto_hoy:,.0f}".replace(",", "."))
+    kpi1.metric("Gasto total hoy", format_clp(gasto_hoy))
     kpi2.metric(
         f"Acumulado del ciclo",
-        f"${gasto_ciclo:,.0f}".replace(",", "."),
-        help=f"Gastos desde el {cycle_start.strftime('%d/%m/%Y')} (inicio del ciclo)",
+        format_clp(gasto_ciclo),
+        help=(
+            f"Gasto de consumo neto desde el {cycle_start.strftime('%d/%m/%Y')} "
+            "(compras − anulaciones TC; sin transferencias ni pagos de tarjeta)"
+        ),
     )
     kpi3.metric(
         "Variación vs ciclo anterior",
@@ -127,12 +145,9 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
     st.subheader("Gastos por categoría")
     st.caption("Todas tus transacciones agrupadas para ver en qué se va el dinero.")
 
-    gastos = df[df["amount"] > 0].copy()
-    if gastos.empty:
+    if df.empty:
         st.info("Sin gastos registrados.")
         return
-
-    gastos["category_name"] = gastos["category_name"].fillna(UNCATEGORIZED_LABEL)
 
     col_f1, col_f2, col_f3 = st.columns(3)
     today = pd.Timestamp.now(tz=config.TIMEZONE).date()
@@ -148,6 +163,11 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
     preset = col_f1.selectbox("Período", list(presets.keys()), index=1)
     since, until = presets[preset]
 
+    show_all = col_f3.checkbox("Incluir transferencias y pagos TC", value=False)
+    # Por defecto: consumo neto (Anulación TC con amount < 0 entra al neto)
+    gastos = df.copy() if show_all else _filter_real_expenses(df)
+    gastos["category_name"] = gastos["category_name"].fillna(UNCATEGORIZED_LABEL)
+
     if since:
         gastos = gastos[gastos["date"].dt.date >= since]
     if until:
@@ -159,12 +179,6 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
     if bank_filter != "Todos":
         gastos = gastos[gastos["bank"] == bank_filter]
 
-    show_all = col_f3.checkbox("Incluir transferencias y pagos TC", value=True)
-
-    if not show_all:
-        exclude_types = {"Transferencia", "Transferencia Propia", "Pago TC", "Pago Producto"}
-        gastos = gastos[~gastos["type"].isin(exclude_types)]
-
     if gastos.empty:
         st.info("Sin transacciones con los filtros seleccionados.")
         return
@@ -175,15 +189,16 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
         .reset_index()
         .sort_values("total", ascending=False)
     )
-    summary["%"] = (summary["total"] / summary["total"].sum() * 100).round(1)
-    summary["total_fmt"] = summary["total"].apply(
-        lambda x: f"${x:,.0f}".replace(",", ".")
+    total_sum = summary["total"].sum()
+    summary["%"] = (
+        (summary["total"] / total_sum * 100).round(1) if total_sum else 0.0
     )
+    summary["total_fmt"] = summary["total"].apply(lambda x: format_clp(int(x)))
 
-    total_general = gastos["amount"].sum()
+    total_general = int(gastos["amount"].sum())
     st.metric(
-        "Total del período",
-        f"${total_general:,.0f}".replace(",", "."),
+        "Total del período (consumo neto)",
+        format_clp(total_general),
         f"{len(gastos)} movimientos en {len(summary)} categorías",
     )
 
@@ -202,7 +217,7 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
         cat_df = gastos[gastos["category_name"] == cat_name].copy()
         cat_df = cat_df.sort_values("date", ascending=False)
         label = (
-            f"{cat_name} — ${cat_row['total']:,.0f}".replace(",", ".")
+            f"{cat_name} — {format_clp(int(cat_row['total']))}"
             + f" ({int(cat_row['movimientos'])} mov.)"
         )
         with st.expander(label, expanded=cat_name == summary.iloc[0]["category_name"]):
@@ -210,9 +225,7 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
                 ["date", "bank", "merchant", "type", "amount"]
             ].copy()
             display["date"] = display["date"].dt.strftime("%d/%m/%Y %H:%M")
-            display["amount"] = display["amount"].apply(
-                lambda x: f"${x:,.0f}".replace(",", ".")
-            )
+            display["amount"] = display["amount"].apply(lambda x: format_clp(int(x)))
             display.columns = ["Fecha", "Banco", "Comercio", "Tipo", "Monto"]
             st.dataframe(display, use_container_width=True, hide_index=True)
 
@@ -221,12 +234,16 @@ def _render_spending_by_category(conn: sqlite3.Connection, df: pd.DataFrame) -> 
 
 def _render_charts(df: pd.DataFrame) -> None:
     col1, col2 = st.columns(2)
+    # Consumo neto: incluye anulaciones (amount < 0); excluye transferencias/pagos
+    plot_base = _filter_real_expenses(df)
 
     with col1:
         st.subheader("Gasto por categoría")
-        plot_df = df[df["amount"] > 0].copy()
+        plot_df = plot_base.copy()
         plot_df["category_name"] = plot_df["category_name"].fillna("Sin categoría")
         cat_df = plot_df.groupby("category_name")["amount"].sum().reset_index()
+        # Pie chart no acepta negativos: mostrar solo categorías con total > 0
+        cat_df = cat_df[cat_df["amount"] > 0]
         if cat_df.empty:
             st.info("Sin transacciones categorizadas aún")
         else:
@@ -244,8 +261,7 @@ def _render_charts(df: pd.DataFrame) -> None:
     with col2:
         st.subheader("Evolución diaria del gasto")
         daily = (
-            df[df["amount"] > 0]
-            .groupby(df["date"].dt.date)["amount"]
+            plot_base.groupby(plot_base["date"].dt.date)["amount"]
             .sum()
             .reset_index()
         )

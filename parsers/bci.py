@@ -1,13 +1,19 @@
 """Parser de correos BCI.
 
-Soporta dos tipos de notificación:
+Soporta notificaciones:
   - Compra con tarjeta de crédito (from: contacto@bci.cl)
+  - Anulación / reverso de TC (preautorizaciones Uber, estacionamientos, etc.)
   - Aviso de transferencia de fondos (from: transferencias@bci.cl)
 
 Formato real observado en muestras:
   TC:                    Monto $202.502 / Fecha 02/03/2026 / Comercio XXXXX
+  Anulación TC:          Realizaste una anulación nacional ... Monto $X / Comercio Y
   Transferencia saliente: Monto transferido $100.000 / Nombre del destinatario XXX / Fecha de abono 01/03/2026
   Transferencia entrante: Razón social: EMPRESA SPA / Monto transferido: $ 1,380,000 / Fecha: 30/03/2025
+
+Política de signo:
+  - Compra TC / Compra TC FX → amount > 0
+  - Anulación TC → amount < 0 (cancela el provisorio al sumar gasto de consumo)
 """
 
 from __future__ import annotations
@@ -17,6 +23,28 @@ import re
 from models import TransactionRecord
 from parsers.base import BankParser
 from utils import normalize_clp_amount, parse_chilean_date
+
+# Marcadores de anulación/reverso en el cuerpo (BCI real: "anulación nacional")
+_ANULACION_MARKERS = (
+    "anulación nacional",
+    "anulacion nacional",
+    "anulación internacional",
+    "anulacion internacional",
+    "anulación de tarjeta",
+    "anulacion de tarjeta",
+    "realizaste una\nanulación",
+    "realizaste una anulación",
+    "realizaste una\nanulacion",
+    "realizaste una anulacion",
+    "reverso de compra",
+    "reverso nacional",
+)
+
+
+def _is_anulacion_body(body: str) -> bool:
+    """Detecta si el correo es anulación/reverso de TC (no compra)."""
+    body_l = body.lower()
+    return any(marker in body_l for marker in _ANULACION_MARKERS)
 
 
 class BCIParser(BankParser):
@@ -131,9 +159,15 @@ class BCIParser(BankParser):
             or "transferencia de fondos" in body_l
             or "realizaste una compra" in body_l
             or "tarjeta de crédito" in body_l
+            or "anulación" in subject_l
+            or "anulacion" in subject_l
+            or "anulación" in body_l
+            or "anulacion" in body_l
+            or "reverso" in body_l
         )
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
+        is_void = _is_anulacion_body(body)
         # Auto-transferencia entre cuentas propias — tiene prioridad (no tiene "Nombre del destinatario")
         match = self._PATTERN_TRANSFER_SELF.search(body)
         if match:
@@ -190,16 +224,19 @@ class BCIParser(BankParser):
                 gmail_message_id=gmail_message_id,
             )
 
-        # Compra en moneda extranjera (USD, EUR, etc.) — antes de los patrones CLP
+        # Compra / anulación en moneda extranjera (USD, EUR, etc.) — antes de los patrones CLP
         match = self._PATTERN_TC_FX.search(body)
         if match:
             currency = match.group("currency").upper()
             raw_fx = match.group("amount").replace(",", ".")
+            amount = round(float(raw_fx))
+            if is_void:
+                amount = -abs(amount)
             return TransactionRecord(
                 bank=self.bank_name,
                 date=parse_chilean_date(match.group("date")),
-                amount=round(float(raw_fx)),
-                type="Compra TC FX",
+                amount=amount,
+                type="Anulación TC" if is_void else "Compra TC FX",
                 merchant=f"{currency} - {match.group('merchant').strip()}",
                 source="gmail",
                 raw_text=body,
@@ -210,11 +247,14 @@ class BCIParser(BankParser):
         for pattern in (self._PATTERN_TC_LABEL, self._PATTERN_TC_PRE, self._PATTERN_TC_POST):
             match = pattern.search(body)
             if match:
+                amount = normalize_clp_amount(match.group("amount"))
+                if is_void:
+                    amount = -abs(amount)
                 return TransactionRecord(
                     bank=self.bank_name,
                     date=parse_chilean_date(match.group("date")),
-                    amount=normalize_clp_amount(match.group("amount")),
-                    type="Compra TC",
+                    amount=amount,
+                    type="Anulación TC" if is_void else "Compra TC",
                     merchant=match.group("merchant").strip(),
                     source="gmail",
                     raw_text=body,

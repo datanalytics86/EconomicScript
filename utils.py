@@ -86,3 +86,68 @@ def compute_content_hash(bank: str, date: str, amount: int, merchant: str) -> st
 
     payload = f"{bank}|{date}|{amount}|{merchant.strip().upper()}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+# ── Gasto de consumo neto ─────────────────────────────────────────────────────
+# Política:
+#   1. Anulaciones se parsean como type="Anulación TC" y amount < 0.
+#   2. En totales de gasto real se SUMAN los amounts de tipos de consumo
+#      (Compra TC + Anulación TC + …). El provisorio (+X) y su anulación (-X)
+#      se cancelan; queda solo el cargo final.
+#   3. Transferencias y pagos de tarjeta NO son gasto de consumo (movimiento
+#      entre cuentas / pago de deuda ya gastada).
+#
+# Convención de signo:
+#   amount > 0  → cargo / salida de dinero
+#   amount < 0  → anulación / reverso / abono que reduce gasto
+
+NON_CONSUMPTION_TYPES: frozenset[str] = frozenset(
+    {
+        "Transferencia",
+        "Transferencia Propia",
+        "Transferencia Entrante",
+        "Transferencia Recibida",
+        "Pago TC",
+        "Pago Producto",
+    }
+)
+
+# Prefijos de type que nunca entran al gasto de consumo
+_NON_CONSUMPTION_PREFIXES: tuple[str, ...] = (
+    "Transferencia",
+    "Pago TC",
+    "Pago Producto",
+)
+
+# Fragmento SQL reutilizable (alias de tabla `t`) para filtros de consumo neto.
+# Incluye Anulación TC (amount < 0) y excluye transferencias/pagos.
+CONSUMPTION_SQL_FILTER: str = (
+    "t.type NOT LIKE 'Transferencia%' "
+    "AND t.type NOT LIKE 'Pago TC%' "
+    "AND t.type NOT LIKE 'Pago Producto%'"
+)
+
+
+def is_consumption_type(tx_type: str | None) -> bool:
+    """True si el tipo cuenta para gasto de consumo neto (incluye Anulación TC)."""
+    if not tx_type:
+        return True
+    if tx_type in NON_CONSUMPTION_TYPES:
+        return False
+    return not any(tx_type.startswith(p) for p in _NON_CONSUMPTION_PREFIXES)
+
+
+def is_real_expense(tx_type: str | None, amount: int | None = None) -> bool:
+    """Alias semántico: fila que entra al total de gasto real (consumo neto).
+
+    No filtra por signo: las anulaciones (amount < 0) deben sumarse para netear.
+    El parámetro amount se acepta por compatibilidad/API y no se usa en el filtro.
+    """
+    del amount  # API estable; el neteo se hace sumando amounts en el caller
+    return is_consumption_type(tx_type)
+
+
+def format_clp(amount: int) -> str:
+    """Formatea CLP con signo y separador de miles chileno."""
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,.0f}".replace(",", ".")

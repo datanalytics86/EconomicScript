@@ -12,146 +12,112 @@ Sistema personal de consolidación financiera para bancos chilenos. Extrae trans
 
 ---
 
+## Convención de signos y gasto de consumo neto
+
+| `type` | `amount` | Entra al gasto de consumo |
+|---|---|---|
+| `Compra TC` / `Compra TC FX` | **> 0** | Sí |
+| `Anulación TC` / `Reverso TC` | **< 0** | Sí (netea el provisorio) |
+| `Transferencia*` | > 0 | **No** |
+| `Pago TC` / `Pago Producto` | > 0 | **No** |
+
+**Flujo Uber / preauth:**
+
+1. Preautorización `+8000` (`Compra TC`)
+2. Cargo final `+8190` (`Compra TC`)
+3. Anulación del provisorio `-8000` (`Anulación TC`)
+4. **Neto = 8190** (sumar amounts de tipos de consumo)
+
+API compartida:
+
+- `utils.is_consumption_type` / `is_real_expense` / `CONSUMPTION_SQL_FILTER`
+- `app._filter_real_expenses` (KPIs, charts, vista por categoría)
+- `report_utils.fetch_transactions_grouped(expenses_only=True)` (email diario)
+
+**No filtrar `amount > 0`** en gasto real: las anulaciones negativas deben entrar.
+
+Categoría de voids: **`Ajustes/Anulaciones`** (no “Transporte” por keyword UBER).  
+No se aprenden reglas de merchant desde anulaciones.
+
+---
+
 ## Estructura
 
 ```
-parsers/
-  base.py          # Clase abstracta BankParser
-  bci.py           # Parser BCI: compra TC (3 layouts) + transferencias
-  banco_estado.py  # Parser BancoEstado: compra TC, transferencias, pago producto
-  security.py      # Parser Security: compra TC, transferencias entrante/saliente
-gmail_ingest.py    # Conexión IMAP OAuth2, fetching y parseo de correos
-statement_parser.py# Parseo de PDF/CSV (EECC tarjeta crédito + cartola cuenta corriente)
-reconciler.py      # Matching gmail vs cartola (tolerancia ±1 día, mismo monto exacto)
-categorizer.py     # Categorización automática por reglas LIKE + aprendizaje
-daily_report.py    # Reporte HTML por email con KPIs del día y ciclo-a-la-fecha
-run_daily.py       # Orquestador diario: ingest → categorizar → enviar reporte
-app.py             # Dashboard Streamlit
-db.py              # Capa SQLite3
-models.py          # TransactionRecord (dataclass)
-config.py          # Variables de entorno centralizadas
-utils.py           # normalize_clp_amount, parse_chilean_date, get_cycle_start_date
-dump_failing.py    # Script diagnóstico: muestra body real + resultado del parser
-tests/
-  test_parsers.py  # 40+ tests unitarios de parsers y utils
-  conftest.py
-samples/dropzone/  # PDFs de muestra sin password para tests
-sql/schema.sql     # Esquema: transactions, categories, category_rules, reconciliation_log, unprocessed_emails
-logs/              # Logs diarios daily_YYYY-MM-DD.log
+parsers/           # BCI, BancoEstado, Security (+ Anulación TC)
+gmail_ingest.py    # IMAP OAuth2; UNSEEN o SINCE (lookback)
+statement_parser.py
+reconciler.py
+categorizer.py     # merchant + type-first para Anulación TC
+daily_report.py    # email HTML (día + ciclo + últimos 10 días)
+run_daily.py       # lookback GMAIL_LOOKBACK_DAYS (default 7)
+run_poll.py        # poll; INSTANT_ALERTS_ENABLED=false por defecto
+backfill.py        # re-ingesta segura por rango (dedup gmail_message_id)
+reprocess_unprocessed.py
+scripts/fix_anulaciones.py  # corrige voids históricos mal tipados
+utils.py           # signos, is_real_expense, get_cycle_start_date
+app.py             # Streamlit
 ```
 
 ---
 
-## Base de datos (SQLite — `finance.db`)
+## Base de datos (`finance.db`)
 
 | Tabla | Propósito |
 |---|---|
-| `transactions` | Transacciones (gmail + cartola). Unique en `gmail_message_id` y `content_hash` |
-| `categories` | Categorías de gasto |
-| `category_rules` | Patrones LIKE → categoría (auto-aprendizaje) |
-| `reconciliation_log` | Log de matching gmail vs cartola |
-| `unprocessed_emails` | Correos que ningún parser pudo procesar (para revisión manual) |
+| `transactions` | Unique en `gmail_message_id` y `content_hash` (dedupe) |
+| `categories` / `category_rules` | Categorización |
+| `reconciliation_log` | Match gmail vs cartola |
+| `unprocessed_emails` | Fallos de parseo / sin parser |
 
 ---
 
-## Flujo diario (automático, 06:55 AM vía Task Scheduler Windows)
+## Flujo diario
 
 ```
 run_daily.py
-  1. GmailIngestor.ingest()          → correos UNSEEN de los 3 bancos
-  2. auto_categorize(conn)           → aplica reglas de category_rules
-  3. send_daily_report(ayer)         → email HTML con transacciones y ciclo-a-la-fecha
+  1. ingest(since_date=hoy-LOOKBACK)  # no solo UNSEEN
+  2. auto_categorize
+  3. reconcile
+  4. send_daily_report (hoy parcial o ayer)
 ```
 
----
+**Huecos de días en $0:** suelen deberse a (a) solo UNSEEN + mails leídos en el móvil,  
+(b) PC/scheduler apagado > lookback, (c) parsers que fallaban. Mitigación:
 
-## Estado actual del proyecto (actualizado 2026-03-04)
-
-### ✅ Funcionando correctamente
-- Parseo de correos BCI, Banco Estado y Security (incluyendo 3 layouts distintos de BCI)
-- OAuth2 XOAUTH2 para IMAP Gmail
-- Ingesta histórica (`ingest(since_date=...)`) y diaria (`ingest()` sin fecha)
-- Parseo de PDF: cartola cuenta corriente BancoEstado + EECC tarjeta crédito (BCI, Security, BancoEstado)
-- Reconciliación gmail vs cartola
-- Categorización automática con aprendizaje
-- Reporte diario HTML por email
-- Dashboard Streamlit
-- 40+ tests unitarios pasando
-- `dump_failing.py`: herramienta de diagnóstico para revisar correos reales y resultado del parser
-
-### ⚠️ Casos sin parser (esperados, NO son bugs)
-- Correos de marketing/invitaciones bancarias (ej: charlas BCI)
-- Cartolas adjuntas como PDF encriptado (el body de texto plano no contiene datos parseables)
-
-### 🔧 Fixes recientes (últimos commits)
-| Commit | Descripción |
-|---|---|
-| `e6f6f0c` | Mejora dump_failing.py: misma extracción de body que gmail_ingest + muestra resultado |
-| `df1e184` | Fix: subject headers RFC 2047 encoded en correos BCI no se decodificaban |
-| `9c0a15b` | Fix: stripping de CSS, HTML entities, soporte nuevos formatos de correo |
-| `0a11272` | Agrega dump_failing.py como herramienta de diagnóstico |
-
----
-
-## Comandos útiles para retomar
-
-```powershell
-# Directorio del proyecto
-cd "C:\Users\T14 Gen 2\Documents\Proyectos_Trading\EconomicScript"
-
-# Ver correos reales y resultado de parsers (diagnóstico)
-python dump_failing.py
-
-# Correr tests
-pytest tests/ -v
-
-# Ingesta manual de correos
-python -c "from gmail_ingest import GmailIngestor; print(GmailIngestor().ingest())"
-
-# Ingesta histórica desde una fecha
-python -c "from datetime import date; from gmail_ingest import GmailIngestor; print(GmailIngestor().ingest(since_date=date(2026,1,1)))"
-
-# Dashboard
-streamlit run app.py
-
-# Reporte diario manual
-python run_daily.py
-```
-
----
-
-## Variables de entorno necesarias (`.env` o entorno del sistema)
-
-```
-IMAP_USER            # email Gmail
-OAUTH_CLIENT_ID
-OAUTH_CLIENT_SECRET
-OAUTH_REFRESH_TOKEN
-SMTP_TO              # destinatario del reporte diario
-SMTP_PASSWORD        # App Password de Gmail
-PDF_PASSWORD         # contraseña para cartolas PDF protegidas (si aplica)
-DB_PATH              # por defecto: finance.db
-```
-
----
-
-## Rama de desarrollo activa
-
-```
-claude/code-review-production-eWODj
-```
-
-Siempre desarrollar en esa rama y hacer push con:
 ```bash
-git push -u origin claude/code-review-production-eWODj
+# Backfill seguro 2026-07-01 → hoy (no duplica por gmail_message_id)
+python backfill.py --since 2026-07-01
+
+# Reparsear unprocessed tras mejorar parsers
+python reprocess_unprocessed.py --dry-run
+python reprocess_unprocessed.py
+
+# Corregir anulaciones ya guardadas como Compra TC positiva
+python scripts/fix_anulaciones.py --dry-run
+python scripts/fix_anulaciones.py
 ```
 
 ---
 
-## Posibles mejoras futuras (no urgentes)
+## Alertas
 
-1. Agregar parser para correos de **Banco Santander** o **Scotiabank** si el usuario los usa
-2. Soporte para cartolas PDF con contraseña por archivo (hoy es una sola variable global)
-3. Filtrar automáticamente correos de marketing antes de intentar parsear (ahorrar entradas en `unprocessed_emails`)
-4. Exportación a Google Sheets o Excel para revisión externa
-5. Tests de integración con la base de datos real (hoy los tests son solo unitarios)
+- **No** se envía un email por cada transacción por defecto.
+- `INSTANT_ALERTS_ENABLED=false` en `.env` (recomendado).
+- Si se activa, el poll excluye `Anulación TC`, transferencias y pagos TC.
+
+---
+
+## Tests
+
+```bash
+pytest
+# Criterio: verde; incluye secuencia Uber neto=8190 y Anulación TC negativa
+```
+
+---
+
+## Seguridad
+
+- No hardcodear RUT ni secretos; solo `.env` / OAuth.
+- No reescribir dedupe existente.

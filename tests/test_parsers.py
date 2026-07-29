@@ -270,6 +270,80 @@ def test_bci_tc_fx_decimal() -> None:
     assert "BEAU SOIR MONTREAL CA" in tx.merchant
 
 
+def test_bci_anulacion_nacional_uber() -> None:
+    """Anulación nacional BCI (preauth Uber): type Anulación TC y amount negativo.
+
+    Flujo real: provisorio + cargo final + anulación del provisorio.
+    Si la anulación se guarda como Compra TC positiva, el gasto se infla al doble.
+    """
+    parser = BCIParser()
+    body = (
+        "Notificación uso TDC\n"
+        "Hola\n"
+        "NICOLAS IGNACIO SEBASTIAN ANDRADE SOCIAS\n"
+        "Realizaste una\n"
+        "anulación nacional\n"
+        "con tu\n"
+        "tarjeta de crédito.\n"
+        "Número tarjeta crédito\n"
+        "****9406\n"
+        "Monto\n"
+        "$9.205\n"
+        "Fecha\n"
+        "29/07/2026\n"
+        "Hora\n"
+        "07:52 horas\n"
+        "Comercio\n"
+        "PAYU *UBER TRIP SANTIAGO CL\n"
+    )
+    tx = parser.parse(body, "bci_anul_uber_1")
+    assert tx.bank == "BCI"
+    assert tx.type == "Anulación TC"
+    assert tx.amount == -9205
+    assert "UBER" in tx.merchant.upper()
+    assert tx.date.day == 29
+    assert tx.date.month == 7
+    assert tx.date.year == 2026
+
+
+def test_bci_anulacion_does_not_look_like_compra() -> None:
+    """Misma estructura Monto/Fecha/Comercio pero texto de anulación → no Compra TC."""
+    parser = BCIParser()
+    body = (
+        "Realizaste una anulación nacional con tu tarjeta de crédito.\n"
+        "Monto\n$8.000\n"
+        "Fecha\n26/07/2026\n"
+        "Hora\n10:00 horas\n"
+        "Comercio\nPAYU *UBER TRIP SANTIAGO CL\n"
+    )
+    tx = parser.parse(body, "bci_anul_2")
+    assert tx.type == "Anulación TC"
+    assert tx.amount == -8000
+
+
+def test_bci_compra_still_positive_when_not_anulacion() -> None:
+    """Regresión: compra normal no se confunde con anulación."""
+    parser = BCIParser()
+    body = (
+        "Realizaste una\n"
+        "compra\n"
+        "con tu\n"
+        "tarjeta de crédito.\n"
+        "Monto\n$9.455\n"
+        "Fecha\n29/07/2026\n"
+        "Hora\n07:52 horas\n"
+        "Comercio\nPAYU *UBER TRIP SANTIAGO CL\n"
+    )
+    tx = parser.parse(body, "bci_compra_uber")
+    assert tx.type == "Compra TC"
+    assert tx.amount == 9455
+
+
+def test_bci_can_parse_anulacion_subject() -> None:
+    body = "Realizaste una anulación nacional con tu tarjeta de crédito. Monto $1.000"
+    assert BCIParser().can_parse("contacto@bci.cl", "Notificación uso TDC", body)
+
+
 # ─────────────────────────────────────────────
 # BancoEstado
 # ─────────────────────────────────────────────
@@ -531,6 +605,62 @@ def test_bancoestado_compra_fx_cad() -> None:
     assert tx.date.day == 20
     assert tx.date.month == 6
     assert tx.date.year == 2023
+
+
+def test_bancoestado_anulacion() -> None:
+    """Anulación BancoEstado: amount negativo y type Anulación TC."""
+    parser = BancoEstadoParser()
+    body = (
+        "Se ha realizado una anulación por $ 5.000 en UBER TRIP asociado a su "
+        "tarjeta de crédito terminada en **** 0608 el día 15/07/2026 a las 12:00 hrs.\n"
+    )
+    tx = parser.parse(body, "be_anul_1")
+    assert tx.type == "Anulación TC"
+    assert tx.amount == -5000
+    assert "UBER" in tx.merchant.upper()
+
+
+def test_security_anulacion() -> None:
+    """Anulación Security: amount negativo."""
+    parser = SecurityParser()
+    body = (
+        "Estimado(a) NICOLAS,\n"
+        "El 15/07/2026 a las 14:30 realizaste una anulación en\n"
+        "UBER TRIP PROVIDENCIA CHL de $4.500 con cargo a la tarjeta ***7233.\n"
+    )
+    tx = parser.parse(body, "sec_anul_1")
+    assert tx.type == "Anulación TC"
+    assert tx.amount == -4500
+    assert "UBER" in tx.merchant.upper()
+
+
+# ─────────────────────────────────────────────
+# utils — gasto de consumo neto
+# ─────────────────────────────────────────────
+
+def test_is_consumption_type_includes_anulacion() -> None:
+    from utils import is_consumption_type, is_real_expense
+
+    assert is_consumption_type("Compra TC")
+    assert is_consumption_type("Compra TC FX")
+    assert is_consumption_type("Anulación TC")
+    assert is_real_expense("Anulación TC", -8000)
+    assert not is_consumption_type("Transferencia")
+    assert not is_consumption_type("Pago TC")
+    assert not is_consumption_type("Transferencia Propia")
+
+
+def test_uber_preauth_netting() -> None:
+    """Provisorio + final + anulación del provisorio → solo queda el final."""
+    from utils import is_consumption_type
+
+    rows = [
+        ("Compra TC", 8000),       # preauth
+        ("Compra TC", 8190),       # final
+        ("Anulación TC", -8000),   # void preauth
+    ]
+    net = sum(a for t, a in rows if is_consumption_type(t))
+    assert net == 8190
 
 
 # ─────────────────────────────────────────────

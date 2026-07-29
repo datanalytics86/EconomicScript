@@ -45,10 +45,13 @@ _DEFAULT_CATEGORIES: dict[str, list[str]] = {
     "Pagos tarjeta": [],
     "Compras extranjero": [],
     "Ingresos": [],
+    "Ajustes/Anulaciones": [],  # preauth voids; amount < 0; no confundir con gasto de comercio
     "Otros": [],
 }
 
 # Mapeo tipo de transacción → categoría (cuando no hay match por comercio)
+# Anulación TC → "Ajustes/Anulaciones" (explícito; el neto del día suma amount negativo).
+# Se aplica ANTES de reglas por merchant para no mezclar voids Uber con "Transporte".
 _TYPE_CATEGORY_MAP: dict[str, str] = {
     "Transferencia": "Transferencias",
     "Transferencia Propia": "Transferencias",
@@ -57,7 +60,26 @@ _TYPE_CATEGORY_MAP: dict[str, str] = {
     "Pago TC": "Pagos tarjeta",
     "Pago Producto": "Pagos tarjeta",
     "Compra TC FX": "Compras extranjero",
+    "Anulación TC": "Ajustes/Anulaciones",
+    "Reverso TC": "Ajustes/Anulaciones",
 }
+
+# Tipos que se categorizan solo por type (nunca por merchant)
+_TYPE_FIRST_TYPES: frozenset[str] = frozenset({"Anulación TC", "Reverso TC"})
+
+# Tipos desde los que no se aprenden reglas de merchant (evitar ruido en aprendizaje)
+_NO_LEARN_TYPES: frozenset[str] = frozenset(
+    {
+        "Anulación TC",
+        "Reverso TC",
+        "Transferencia",
+        "Transferencia Propia",
+        "Transferencia Entrante",
+        "Transferencia Recibida",
+        "Pago TC",
+        "Pago Producto",
+    }
+)
 
 
 def _escape_like(pattern: str) -> str:
@@ -119,25 +141,55 @@ def _categorize_by_type(conn: sqlite3.Connection) -> int:
     return updated
 
 
+def _categorize_voids_first(conn: sqlite3.Connection) -> int:
+    """Anulaciones/reversos → Ajustes/Anulaciones (antes de reglas de merchant)."""
+    updated = 0
+    for tx_type in _TYPE_FIRST_TYPES:
+        cat_name = _TYPE_CATEGORY_MAP.get(tx_type)
+        if not cat_name:
+            continue
+        cat_id = _get_category_id(conn, cat_name)
+        if not cat_id:
+            continue
+        # Fuerza categoría aunque un merchant rule (UBER→Transporte) la haya puesto mal
+        cursor = conn.execute(
+            """
+            UPDATE transactions SET category_id=?
+            WHERE type = ?
+              AND (category_id IS NULL OR category_id != ?)
+            """,
+            (cat_id, tx_type, cat_id),
+        )
+        updated += cursor.rowcount
+    return updated
+
+
 def auto_categorize(conn: sqlite3.Connection) -> int:
-    """Aplica reglas por comercio y luego por tipo de transacción."""
+    """Aplica: (1) anulaciones por tipo, (2) reglas por comercio, (3) resto por tipo."""
     ensure_default_categories(conn)
 
     updated = 0
+    # 1) Voids primero — no deben caer en Transporte por keyword UBER
+    updated += _categorize_voids_first(conn)
+
+    # 2) Merchant rules (excluye tipos ya forzados por type-first)
     rules = conn.execute("SELECT pattern, category_id FROM category_rules").fetchall()
+    type_first_placeholders = ",".join("?" * len(_TYPE_FIRST_TYPES))
     for rule in rules:
         escaped = _escape_like(rule["pattern"])
         cursor = conn.execute(
-            """
+            f"""
             UPDATE transactions
             SET category_id=?
             WHERE category_id IS NULL
-            AND UPPER(merchant) LIKE UPPER(?) ESCAPE '\\'
+              AND type NOT IN ({type_first_placeholders})
+              AND UPPER(merchant) LIKE UPPER(?) ESCAPE '\\'
             """,
-            (rule["category_id"], f"%{escaped}%"),
+            (rule["category_id"], *_TYPE_FIRST_TYPES, f"%{escaped}%"),
         )
         updated += cursor.rowcount
 
+    # 3) Resto por tipo (transferencias, pagos, FX, …)
     updated += _categorize_by_type(conn)
     return updated
 
@@ -148,11 +200,25 @@ def assign_category_and_learn(
     category_id: int,
     merchant: str,
 ) -> None:
+    """Asigna categoría a una TX y opcionalmente aprende regla por merchant.
+
+    No crea reglas de aprendizaje desde anulaciones/reversos ni transferencias/pagos:
+    el merchant de una anulación es el mismo que la compra y contaminaría el
+    aprendizaje si el usuario la reclasifica por error.
+    """
     conn.execute(
         "UPDATE transactions SET category_id=? WHERE id=?",
         (category_id, transaction_id),
     )
+    row = conn.execute(
+        "SELECT type FROM transactions WHERE id=?", (transaction_id,)
+    ).fetchone()
+    tx_type = row["type"] if row else None
+    if tx_type in _NO_LEARN_TYPES:
+        return
     pattern = _normalize_merchant(merchant)
+    if not pattern:
+        return
     conn.execute(
         "INSERT OR IGNORE INTO category_rules(pattern, category_id) VALUES(?, ?)",
         (pattern, category_id),

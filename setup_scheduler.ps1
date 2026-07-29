@@ -5,8 +5,8 @@
 .DESCRIPTION
     Crea tres tareas:
     - EconomicScript-Poll    : cada 10 min, revisa Gmail y alerta al instante
-    - EconomicScript-Daily   : 07:00, reporte completo del día anterior
-    - EconomicScript-Evening : 20:00, resumen parcial del día actual
+    - EconomicScript-Daily   : 07:00, reporte completo del día anterior (--yesterday)
+    - EconomicScript-Evening : 20:00, resumen parcial del día actual (--today)
 
 .NOTES
     Ejecutar como Administrador:
@@ -21,27 +21,6 @@ $ErrorActionPreference = "Stop"
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunWrapper  = Join-Path $ScriptDir "run_task.ps1"
 $PollMinutes = 10
-
-$Tasks = @(
-    @{
-        Name        = "EconomicScript-Poll"
-        Arguments   = "run_poll.py"
-        Description = "Revisa Gmail cada 10 min y envia alerta instantanea por transaccion nueva."
-        Schedule    = "Poll"
-    },
-    @{
-        Name        = "EconomicScript-Daily"
-        Arguments   = "run_daily.py"
-        Description = "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior."
-        Schedule    = "Daily07"
-    },
-    @{
-        Name        = "EconomicScript-Evening"
-        Arguments   = "run_daily.py --today"
-        Description = "Envia resumen parcial de gastos del dia actual a las 20:00."
-        Schedule    = "Daily20"
-    }
-)
 
 if (-not (Test-Path $RunWrapper)) {
     Write-Error "No se encontró run_task.ps1 en: $RunWrapper"
@@ -65,49 +44,64 @@ Write-Host ""
 Write-Host "Configurando EconomicScript en: $ScriptDir"
 Write-Host ""
 
-$PollCmd   = Join-Path $ScriptDir "poll.cmd"
-$DailyCmd  = Join-Path $ScriptDir "daily.cmd"
+$PollCmd  = Join-Path $ScriptDir "poll.cmd"
+$DailyCmd = Join-Path $ScriptDir "daily.cmd"
 
-foreach ($task in $Tasks) {
-    if ($task.Schedule -eq "Poll") {
-        $tr = "`"$PollCmd`""
-        schtasks.exe /Create /TN $task.Name /TR $tr /SC MINUTE /MO $PollMinutes /F | Out-Null
-        Write-Host "  OK  $($task.Name) (cada $PollMinutes min)" -ForegroundColor Green
-        continue
-    }
+# Importante: NO usar schtasks.exe /TR con rutas que contienen espacios
+# ("T14 Gen 2", "OneDrive", …) — parte el path. Usar Register-ScheduledTask
+# con Execute=cmd.exe y Argument entrecomillado.
 
-    $cmdArgs = if ($task.Schedule -eq "Daily20") { "`"$DailyCmd`" --today" } else { "`"$DailyCmd`"" }
+# ── Poll cada N min ────────────────────────────────────────────────────────────
+$ActionPoll = New-ScheduledTaskAction `
+    -Execute          "cmd.exe" `
+    -Argument         "/c `"$PollCmd`"" `
+    -WorkingDirectory $ScriptDir
 
-    $Action = New-ScheduledTaskAction `
-        -Execute          "cmd.exe" `
-        -Argument         "/c $cmdArgs" `
-        -WorkingDirectory $ScriptDir
+# Trigger por minutos via schtasks solo para el schedule; la acción se sobrescribe abajo.
+# Alternativa 100% PowerShell: repetir trigger -Once -RepetitionInterval
+$pollStart = (Get-Date).Date.AddMinutes(1)
+$PollTrigger = New-ScheduledTaskTrigger -Once -At $pollStart `
+    -RepetitionInterval (New-TimeSpan -Minutes $PollMinutes) `
+    -RepetitionDuration (New-TimeSpan -Days 9999)
 
-    $Trigger = if ($task.Schedule -eq "Daily07") {
-        New-ScheduledTaskTrigger -Daily -At "07:00"
-    } else {
-        New-ScheduledTaskTrigger -Daily -At "20:00"
-    }
+Register-ScheduledTask `
+    -TaskName    "EconomicScript-Poll" `
+    -Action      $ActionPoll `
+    -Trigger     $PollTrigger `
+    -Settings    $Settings `
+    -Description "Revisa Gmail cada $PollMinutes min y envia alerta instantanea." `
+    -Force | Out-Null
+Write-Host "  OK  EconomicScript-Poll (cada $PollMinutes min)" -ForegroundColor Green
 
-    Register-ScheduledTask `
-        -TaskName    $task.Name `
-        -Action      $Action `
-        -Trigger     $Trigger `
-        -Settings    $Settings `
-        -Description $task.Description `
-        -Force | Out-Null
+# ── Daily 07:00 — reporte del día anterior ─────────────────────────────────────
+$ActionDaily = New-ScheduledTaskAction `
+    -Execute          "cmd.exe" `
+    -Argument         "/c `"$DailyCmd`" --yesterday" `
+    -WorkingDirectory $ScriptDir
 
-    Write-Host "  OK  $($task.Name)" -ForegroundColor Green
-}
+Register-ScheduledTask `
+    -TaskName    "EconomicScript-Daily" `
+    -Action      $ActionDaily `
+    -Trigger     (New-ScheduledTaskTrigger -Daily -At "07:00") `
+    -Settings    $Settings `
+    -Description "Ingesta Gmail, auto-categoriza y envia resumen del dia anterior." `
+    -Force | Out-Null
+Write-Host "  OK  EconomicScript-Daily (07:00 --yesterday)" -ForegroundColor Green
 
-# Eliminar tarea antigua con ruta incorrecta si existe
-$oldTask = Get-ScheduledTask -TaskName "EconomicScript-Daily" -ErrorAction SilentlyContinue
-if ($oldTask) {
-    $oldAction = $oldTask.Actions[0]
-    if ($oldAction.WorkingDirectory -and $oldAction.WorkingDirectory -notlike "*OneDrive*") {
-        Write-Host "  Tarea antigua actualizada con nueva ruta." -ForegroundColor Yellow
-    }
-}
+# ── Evening 20:00 — resumen parcial de hoy ─────────────────────────────────────
+$ActionEvening = New-ScheduledTaskAction `
+    -Execute          "cmd.exe" `
+    -Argument         "/c `"$DailyCmd`" --today" `
+    -WorkingDirectory $ScriptDir
+
+Register-ScheduledTask `
+    -TaskName    "EconomicScript-Evening" `
+    -Action      $ActionEvening `
+    -Trigger     (New-ScheduledTaskTrigger -Daily -At "20:00") `
+    -Settings    $Settings `
+    -Description "Envia resumen parcial de gastos del dia actual a las 20:00." `
+    -Force | Out-Null
+Write-Host "  OK  EconomicScript-Evening (20:00 --today)" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "Tareas activas:"

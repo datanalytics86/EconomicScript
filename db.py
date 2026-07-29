@@ -84,6 +84,55 @@ class Database:
             LOGGER.debug("Insertadas %s/%s transacciones", inserted, len(rows))
             return inserted
 
+    def insert_transaction(self, t: TransactionRecord) -> bool:
+        """Inserta una transacción. True si se escribió una fila nueva."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO transactions
+                (bank, date, amount, type, merchant, source, raw_text,
+                 gmail_message_id, statement_ref, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    t.bank,
+                    t.date.strftime("%Y-%m-%d %H:%M:%S"),
+                    t.amount,
+                    t.type,
+                    t.merchant,
+                    t.source,
+                    t.raw_text,
+                    t.gmail_message_id,
+                    t.statement_ref,
+                    t.content_hash,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def known_gmail_ids(self, ids: Iterable[str]) -> set[str]:
+        """Retorna el subconjunto de gmail_message_id ya presentes en transactions."""
+        id_list = [i for i in ids if i]
+        if not id_list:
+            return set()
+        known: set[str] = set()
+        # SQLite límite de variables ~999; chunk por seguridad
+        chunk_size = 500
+        with self.connect() as conn:
+            for i in range(0, len(id_list), chunk_size):
+                chunk = id_list[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT gmail_message_id FROM transactions "
+                    f"WHERE gmail_message_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                known.update(r[0] for r in rows if r[0])
+        return known
+
+    def count_unprocessed_emails(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM unprocessed_emails").fetchone()[0])
+
     def save_unprocessed_email(
         self,
         gmail_message_id: str,

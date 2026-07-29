@@ -38,6 +38,16 @@ class SecurityParser(BankParser):
         re.IGNORECASE | re.DOTALL,
     )
 
+    # Anulación / reverso TC Security
+    # "El DD/MM/YYYY a las HH:MM se realizó una anulación en MERCHANT de $MONTO"
+    # "realizaste una anulación en MERCHANT de $MONTO"
+    _PATTERN_ANULACION = re.compile(
+        r"El\s+(?P<date>\d{2}/\d{2}/\d{4})\s+a\s+las\s+\d+:\d+"
+        r".*?(?:realizaste|se\s+realiz[oó])\s+una\s+(?:anulaci[oó]n|reverso|devoluci[oó]n)"
+        r"\s+en\s+(?P<merchant>.+?)\s+de\s+\$(?P<amount>[\d\.]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     # Transferencia saliente: Monto: → valor → Fecha y hora: → valor → Nombre: → valor
     _PATTERN_TRANSFER_OUT = re.compile(
         r"Monto:\s*[\n\r\s]*\$?\s*(?P<amount>[\d\.]+).*?"
@@ -89,10 +99,30 @@ class SecurityParser(BankParser):
             "recibiste",
             "monto",
             "cargo",
+            "anulación",
+            "anulacion",
+            "reverso",
+            "devolución",
+            "devolucion",
         )
         return any(kw in body_l for kw in tx_keywords)
 
     def parse(self, body: str, gmail_message_id: str) -> TransactionRecord:
+        # 0. Anulación / reverso TC — prioriza sobre compra
+        m = self._PATTERN_ANULACION.search(body)
+        if m:
+            merchant = re.sub(r"\s+[A-Z]{2,3}\s*$", "", m.group("merchant")).strip()
+            return TransactionRecord(
+                bank=self.bank_name,
+                date=parse_chilean_date(m.group("date")),
+                amount=-abs(normalize_clp_amount(m.group("amount"))),
+                type="Anulación TC",
+                merchant=merchant or m.group("merchant").strip(),
+                source="gmail",
+                raw_text=body,
+                gmail_message_id=gmail_message_id,
+            )
+
         # 1. Compra TC
         m = self._PATTERN_COMPRA.search(body)
         if m:
